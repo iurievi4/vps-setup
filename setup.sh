@@ -1162,7 +1162,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 20 3 * * 3 root /usr/local/sbin/system-update.sh
 
 # X-UI update
-30 4 * * 5 root /usr/local/bin/x-ui update >> /var/log/xui-update.log 2>&1
+30 4 * * 5 root /usr/bin/curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/main/install.sh | /usr/bin/bash -s -- -y >> /var/log/xui-auto-update.log 2>&1
 
 # X-UI health check
 */30 * * * * root /usr/local/sbin/xui-health.sh
