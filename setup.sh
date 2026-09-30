@@ -256,6 +256,11 @@ chmod 644 /etc/ssh/sshd_config.d/99-custom-port.conf
 
 systemctl disable --now ssh.socket 2>/dev/null || true
 systemctl enable ssh.service
+
+# Создаем каталог разделения привилегий для корректной работы sshd -t в Ubuntu 24.04
+mkdir -p /run/sshd
+chmod 0755 /run/sshd
+
 sshd -t
 systemctl restart ssh
 sleep 2
