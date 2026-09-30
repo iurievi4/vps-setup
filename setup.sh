@@ -2,7 +2,7 @@
 
 ###############################################################################
 # ☁️ VPS BOOTSTRAP / SETUP
-# Версия: 3.9.1 (Production-Ready)
+# Версия: 3.9.2 (Production-Ready)
 #
 # Поддерживаемые ОС: Ubuntu / Debian (amd64, arm64)
 #
@@ -10,13 +10,14 @@
 #   - SSH порт: 1241
 #   - Порты Xray: 2053, 8443
 #   - WARP SOCKS5: 127.0.0.1:40000 (внутренний)
+#   - Полное отключение стандартного спама Ubuntu MOTD
 #   - Блокирующая финальная проверка компонентов
 ###############################################################################
 
 set -Eeuo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
-SCRIPT_VERSION="3.9.1"
+SCRIPT_VERSION="3.9.2"
 BOOTSTRAP_MARKER="/etc/vps-bootstrap-complete"
 LOG_FILE="/var/log/vps-setup.log"
 
@@ -295,12 +296,12 @@ if [[ "$INSTALL_WARP" == "1" ]]; then
         esac
 
         if [[ -z "$repo_codename" ]]; then
-            echo "⚠️️ Репозиторий Cloudflare WARP не поддерживает ${OS_ID} '${OS_CODENAME}'."
+            echo "⚠ Репозиторий Cloudflare WARP не поддерживает ${OS_ID} '${OS_CODENAME}'."
             if [[ "$WARP_MANDATORY" == "1" ]]; then
                 echo "❌ Ошибка: WARP объявлен обязательным (WARP_MANDATORY=1). Прерывание."
                 return 1
             else
-                echo "ℹ️ Пропуск установки WARP (WARP_MANDATORY=0)."
+                echo "ℹ️️ Пропуск установки WARP (WARP_MANDATORY=0)."
                 return 0
             fi
         fi
@@ -496,7 +497,6 @@ restore_custom_database() {
     systemctl is-active --quiet x-ui
 }
 
-# Каталоги обслуживания
 mkdir -p /usr/local/x-ui/bin "$BACKUP_DIR" "$PRE_UPDATE_DIR"
 chmod 700 "$BACKUP_DIR" "$PRE_UPDATE_DIR"
 
@@ -916,9 +916,21 @@ systemctl restart cron
 # 11. КОМПАКТНЫЙ ЭКСПЛУАТАЦИОННЫЙ MOTD
 ###############################################################################
 
-echo ">>> Установка быстрого эксплуатационного MOTD..."
+echo ">>> Установка чистого эксплуатационного MOTD..."
 
-# Генерация безопасного пароля MSSQL без хардкода
+# 11.1. Отключаем вообще все скрипты в каталоге MOTD
+chmod -x /etc/update-motd.d/* 2>/dev/null || true
+
+# 11.2. Отключаем службу новостей и рекламы Ubuntu Pro
+if [[ -f /etc/default/motd-news ]]; then
+    sed -i 's/^ENABLED=.*/ENABLED=0/' /etc/default/motd-news
+fi
+systemctl disable --now motd-news.timer 2>/dev/null || true
+
+# 11.3. Очищаем динамический кэш старого баннера
+> /run/motd.dynamic 2>/dev/null || true
+
+# 11.4. Генерация безопасного пароля MSSQL без хардкода
 if [[ ! -f "$MSSQL_SA_PASSWORD_FILE" ]]; then
     ( umask 077; openssl rand -base64 24 > "$MSSQL_SA_PASSWORD_FILE" )
     chmod 600 "$MSSQL_SA_PASSWORD_FILE"
@@ -1074,6 +1086,7 @@ echo -e "${CYAN}└────────────────────�
 echo
 EOF
 
+# 11.5. Включаем обратно ТОЛЬКО наш кастомный мониторинг
 chmod +x /etc/update-motd.d/99-custom-sysinfo
 
 
@@ -1145,7 +1158,7 @@ touch "$BOOTSTRAP_MARKER"
 SERVER_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')"
 
 echo "======================================================================"
-echo " ☁️ VPS УСПЕШНО НАСТРОЕН И ПРОВЕРЕН"
+echo " ☁️️ VPS УСПЕШНО НАСТРОЕН И ПРОВЕРЕН"
 echo "======================================================================"
 echo "IP VPS           : ${SERVER_IP:-unknown}"
 echo "SSH Порт         : ${SSH_PORT}"
