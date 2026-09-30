@@ -380,6 +380,21 @@ echo "🌐 NETWORK"
 ip -4 -brief addr show scope global 2>/dev/null || true
 echo
 
+echo "🛡️ CLOUDFLARE WARP"
+if ss -lnt 2>/dev/null | grep -qE ":40000[[:space:]]"; then
+    WARP_IP="$(curl -s --socks5 127.0.0.1:40000 --max-time 1 https://api.ipify.org 2>/dev/null || true)"
+    if [[ -n "$WARP_IP" ]]; then
+        echo "  ✓ Активен (SOCKS5 127.0.0.1:40000 | IP: ${WARP_IP})"
+    else
+        echo "  ✓ Активен (SOCKS5 127.0.0.1:40000)"
+    fi
+elif command -v warp-cli >/dev/null 2>&1 && warp-cli --accept-tos status 2>/dev/null | grep -qi "Connected"; then
+    echo "  ✓ Активен (Connected)"
+else
+    echo "  ✗ Не активен"
+fi
+echo
+
 echo "📡 PING"
 printf "Yandex: "
 ping -c 1 -W 1 77.88.8.8 >/dev/null 2>&1 && echo "OK" || echo "FAIL"
@@ -445,7 +460,6 @@ echo "=================================================================="
 EOF
 
 chmod +x /etc/update-motd.d/99-custom-sysinfo
-
 
 ###############################################################################
 # 15. ДИРЕКТОРИИ И КЛЮЧИ
