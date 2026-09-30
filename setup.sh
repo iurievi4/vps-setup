@@ -2,38 +2,44 @@
 
 ###############################################################################
 # ☁️ VPS BOOTSTRAP / SETUP
-# Версия: 3.7.0
+# Версия: 3.9.1 (Production-Ready)
 #
-# Ubuntu / Debian
+# Поддерживаемые ОС: Ubuntu / Debian (amd64, arm64)
 #
-# Назначение:
-#   Первичная настройка чистого VPS:
-#   - Отключение IPv6 (sysctl + ufw)
-#   - Nginx (:80 IPv4 only)
-#   - BBR / FQ / TCP Fast Open
-#   - SWAP (универсальная проверка)
-#   - Cloudflare WARP CLI (SOCKS5 proxy :40000)
-#   - UFW (порты: 1241, 80, 443, 2053, 2096, 8443, 8784, 54325)
-#   - SSH :1241 (drop-in + поддержка Ubuntu 24.04 socket activation)
-#   - 3x-ui (non-interactive, SQLite, SSL mode: ip)
-#   - Опциональное восстановление эталонной базы (0 - чистая / 1 - LV / 2 - MW / 3 - TR)
-#   - Резервные копии (ежедневные + pre-update)
-#   - Безопасное автообновление 3x-ui с автоматическим rollback
-#   - Healthcheck (x-ui + xray-core + строгая проверка портов 2053 И 8443)
-#   - Обновление geo-файлов (v2fly + runetfreedom)
-#   - Системное обслуживание в /etc/cron.d/
+# Ключевые параметры:
+#   - SSH порт: 1241
+#   - Порты Xray: 2053, 8443
+#   - WARP SOCKS5: 127.0.0.1:40000 (внутренний)
+#   - Блокирующая финальная проверка компонентов
 ###############################################################################
 
 set -Eeuo pipefail
-
 export DEBIAN_FRONTEND=noninteractive
 
-SCRIPT_VERSION="3.7.0"
+SCRIPT_VERSION="3.9.1"
+BOOTSTRAP_MARKER="/etc/vps-bootstrap-complete"
 LOG_FILE="/var/log/vps-setup.log"
-SSH_PORT="1241"
-XUI_PORT="8784"
-ACME_PORT="80"
-WARP_PROXY_PORT="40000"
+
+# Параметры по умолчанию
+SSH_PORT="${SSH_PORT:-1241}"
+XUI_PORT="${XUI_PORT:-8784}"
+ACME_PORT="${ACME_PORT:-80}"
+WARP_PROXY_PORT="${WARP_PROXY_PORT:-40000}"
+
+# Рабочие порты входящих соединений Xray
+XRAY_PORTS=("2053" "8443")
+
+DISABLE_IPV6="${DISABLE_IPV6:-1}"
+ENABLE_IP_FORWARD="${ENABLE_IP_FORWARD:-0}"
+
+# Порт 54325 для вспомогательного сервиса бэкенда / RPC
+ALLOW_PORT_54325="${ALLOW_PORT_54325:-1}"
+
+# Требования к WARP: устанавливать и считать ли обязательным для прохождения проверки
+INSTALL_WARP="${INSTALL_WARP:-1}"
+WARP_MANDATORY="${WARP_MANDATORY:-1}"
+
+FORCE_BOOTSTRAP="${FORCE_BOOTSTRAP:-0}"
 
 XUI_INSTALL_URL="https://raw.githubusercontent.com/MHSanaei/3x-ui/master/install.sh"
 XUI_UPDATE_URL="https://raw.githubusercontent.com/MHSanaei/3x-ui/main/update.sh"
@@ -41,60 +47,53 @@ XUI_UPDATE_URL="https://raw.githubusercontent.com/MHSanaei/3x-ui/main/update.sh"
 BACKUP_DIR="/root/xui_backups"
 PRE_UPDATE_DIR="${BACKUP_DIR}/pre-update"
 MAINTENANCE_FILE="/etc/cron.d/vps-maintenance"
+MSSQL_SA_PASSWORD_FILE="/root/.mssql-sa-password"
 
 
 ###############################################################################
-# 1. ЛОГИРОВАНИЕ
+# 1. ROOT, МАРКЕР, OS & ARCH CHECK
 ###############################################################################
+
+if [[ "${EUID}" -ne 0 ]]; then
+    echo "❌ Скрипт необходимо запускать с правами root."
+    exit 1
+fi
+
+if [[ -f "$BOOTSTRAP_MARKER" ]] && [[ "$FORCE_BOOTSTRAP" != "1" ]]; then
+    echo
+    echo "======================================================================"
+    echo " ⚠️ ВНИМАНИЕ: Сервер уже настроен этим скриптом!"
+    echo " Маркер: ${BOOTSTRAP_MARKER}"
+    echo " Для повторного запуска используйте: FORCE_BOOTSTRAP=1 bash setup.sh"
+    echo "======================================================================"
+    echo
+    exit 0
+fi
 
 mkdir -p "$(dirname "$LOG_FILE")"
 touch "$LOG_FILE"
 chmod 600 "$LOG_FILE"
-
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo
 echo "======================================================================"
-echo " ☁️ VPS SETUP ${SCRIPT_VERSION}"
+echo " ☁️ VPS BOOTSTRAP ${SCRIPT_VERSION}"
 echo " $(date '+%Y-%m-%d %H:%M:%S')"
 echo "======================================================================"
 echo
-
-
-###############################################################################
-# 2. ОБРАБОТЧИК ОШИБОК
-###############################################################################
 
 on_error() {
     local exit_code=$?
     echo
     echo "======================================================================"
-    echo " ❌ ОШИБКА УСТАНОВКИ"
-    echo " Код: ${exit_code}"
-    echo " Строка: ${BASH_LINENO[0]:-unknown}"
+    echo " ❌ ОШИБКА РАЗВЕРТЫВАНИЯ: Код ${exit_code} на строке ${BASH_LINENO[0]:-unknown}"
     echo " Команда: ${BASH_COMMAND:-unknown}"
     echo " Лог: ${LOG_FILE}"
     echo "======================================================================"
     echo
     exit "$exit_code"
 }
-
 trap on_error ERR
-
-
-###############################################################################
-# 3. ROOT
-###############################################################################
-
-if [[ "${EUID}" -ne 0 ]]; then
-    echo "❌ Скрипт необходимо запускать от root."
-    exit 1
-fi
-
-
-###############################################################################
-# 4. ОС
-###############################################################################
 
 if [[ ! -f /etc/os-release ]]; then
     echo "❌ Не найден /etc/os-release."
@@ -102,142 +101,97 @@ if [[ ! -f /etc/os-release ]]; then
 fi
 
 source /etc/os-release
-echo "OS: ${PRETTY_NAME:-unknown}"
+OS_ID="${ID:-unknown}"
+OS_CODENAME="${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}"
+ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m)"
 
-case "${ID:-}" in
-    ubuntu|debian)
-        ;;
-    *)
-        echo
-        echo "❌ Поддерживаются Ubuntu/Debian."
-        echo "Обнаружено: ${ID:-unknown}"
-        echo
-        exit 1
-        ;;
+echo "OS           : ${PRETTY_NAME:-$OS_ID}"
+echo "Codename     : ${OS_CODENAME:-unknown}"
+echo "Архитектура  : ${ARCH}"
+
+case "$OS_ID" in
+    ubuntu|debian) ;;
+    *) echo "❌ Поддерживаются только Ubuntu и Debian."; exit 1 ;;
+esac
+
+case "$ARCH" in
+    amd64|arm64|x86_64|aarch64) ;;
+    *) echo "❌ Архитектура ${ARCH} не поддерживается."; exit 1 ;;
 esac
 
 
 ###############################################################################
-# 5. АРХИТЕКТУРА
-###############################################################################
-
-ARCH="$(dpkg --print-architecture 2>/dev/null || true)"
-echo "Архитектура: ${ARCH:-unknown}"
-
-
-###############################################################################
-# 6. APT
+# 2. УСТАНОВКА ПАКЕТОВ
 ###############################################################################
 
 echo
-echo ">>> Обновление пакетов..."
+echo ">>> Обновление пакетов и установка системных утилит..."
 apt-get update
 apt-get upgrade -y
 
-
-###############################################################################
-# 7. БАЗОВЫЕ ПАКЕТЫ
-###############################################################################
-
-echo
-echo ">>> Установка базовых пакетов..."
-
 apt-get install -y \
-    nginx \
-    git \
-    curl \
-    wget \
-    gnupg \
-    cron \
-    iproute2 \
-    iputils-ping \
-    lm-sensors \
-    nvme-cli \
-    iptables \
-    ufw \
-    socat \
-    sqlite3 \
-    ca-certificates \
-    openssl \
-    jq \
-    unzip \
-    lsof \
-    procps \
-    net-tools \
-    util-linux
-
-
-###############################################################################
-# 8. CRON
-###############################################################################
+    nginx git curl wget gnupg cron iproute2 iputils-ping \
+    iptables ufw socat sqlite3 ca-certificates openssl jq \
+    unzip lsof procps net-tools util-linux
 
 systemctl enable --now cron
 
 
 ###############################################################################
-# 9. ОТКЛЮЧЕНИЕ IPV6
+# 3. SYSCTL (IPV6, BBR/FQ С ПРОВЕРКОЙ ЯДРА, IP FORWARD)
 ###############################################################################
 
-echo
-echo ">>> Отключение IPv6..."
+echo ">>> Настройка сетевого стека ядра..."
 
-cat > /etc/sysctl.d/99-disable-ipv6.conf <<'EOF'
-# Полное отключение IPv6
+# 3.1. IPv6
+if [[ "$DISABLE_IPV6" == "1" ]]; then
+    cat > /etc/sysctl.d/99-disable-ipv6.conf <<'EOF'
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6 = 1
 EOF
-
-# Применяем отключение на все текущие интерфейсы
-for iface in /proc/sys/net/ipv6/conf/*; do
-    if [[ -d "$iface" ]]; then
-        iface_name="$(basename "$iface")"
-        sysctl -w "net.ipv6.conf.${iface_name}.disable_ipv6=1" >/dev/null 2>&1 || true
-    fi
-done
-
-# Отключаем IPv6 в UFW
-if [[ -f /etc/default/ufw ]]; then
-    sed -i 's/^IPV6=.*/IPV6=no/' /etc/default/ufw
+    for iface in /proc/sys/net/ipv6/conf/*; do
+        [[ -d "$iface" ]] && sysctl -w "net.ipv6.conf.$(basename "$iface").disable_ipv6=1" >/dev/null 2>&1 || true
+    done
+    [[ -f /etc/default/ufw ]] && sed -i 's/^IPV6=.*/IPV6=no/' /etc/default/ufw
+else
+    rm -f /etc/sysctl.d/99-disable-ipv6.conf
+    [[ -f /etc/default/ufw ]] && sed -i 's/^IPV6=.*/IPV6=yes/' /etc/default/ufw
 fi
 
-echo "✓ IPv6 отключен."
+# 3.2. BBR
+modprobe tcp_bbr 2>/dev/null || true
+BBR_CONFIG="# BBR unavailable in kernel"
+if sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bbr; then
+    BBR_CONFIG="net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr"
+    echo "✓ BBR поддерживается ядром и активирован."
+else
+    echo "ℹ️ BBR не обнаружен в доступных алгоритмах ядра, оставлен системный по умолчанию."
+fi
 
-
-###############################################################################
-# 10. SYSCTL / BBR
-###############################################################################
-
-echo
-echo ">>> Настройка TCP оптимизации..."
-
-cat > /etc/sysctl.d/99-vps-optimization.conf <<'EOF'
-# BBR
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
-
-# TCP Fast Open
+cat > /etc/sysctl.d/99-vps-optimization.conf <<EOF
+${BBR_CONFIG}
 net.ipv4.tcp_fastopen = 3
-
-# TCP SYN cookies
 net.ipv4.tcp_syncookies = 1
-
-# IPv4 forwarding
-net.ipv4.ip_forward = 1
-
-# VM
+net.ipv4.ip_forward = ${ENABLE_IP_FORWARD}
 vm.swappiness = 10
 EOF
 
 sysctl --system
 
+if [[ "$DISABLE_IPV6" == "1" ]]; then
+    if [[ "$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)" == "1" ]]; then
+        echo "✓ IPv6 успешно отключен."
+    fi
+fi
+
 
 ###############################################################################
-# 11. SWAP (УНИВЕРСАЛЬНАЯ ПРОВЕРКА)
+# 4. SWAP (2 GB)
 ###############################################################################
 
 if ! swapon --show | grep -q .; then
-    echo
     echo ">>> Создание SWAP 2 GB..."
     if [[ ! -f /swapfile ]]; then
         dd if=/dev/zero of=/swapfile bs=1M count=2048 status=progress
@@ -248,92 +202,145 @@ if ! swapon --show | grep -q .; then
     if ! grep -qE '^/swapfile\s' /etc/fstab; then
         echo '/swapfile none swap sw 0 0' >> /etc/fstab
     fi
+    echo "✓ SWAP активирован."
 else
-    echo "✓ SWAP уже существует в системе."
+    echo "✓ SWAP уже присутствует в системе."
 fi
 
-if ! swapon --show | grep -q .; then
-    echo "❌ SWAP не удалось активировать."
+
+###############################################################################
+# 5. БЕЗОПАСНОСТЬ: UFW -> ПРОВЕРКА -> SSH (ПОРТ 1241)
+###############################################################################
+
+echo ">>> Настройка сетевого экрана (UFW)..."
+
+if [[ ! -f "$BOOTSTRAP_MARKER" ]] || [[ "$FORCE_BOOTSTRAP" == "1" ]]; then
+    ufw --force reset
+    ufw default deny incoming
+    ufw default allow outgoing
+
+    # Открытие портов в UFW ДО смены порта в SSH
+    ufw allow "${SSH_PORT}/tcp" comment 'SSH'
+    ufw allow 80/tcp comment 'HTTP'
+    ufw allow 443/tcp comment 'HTTPS'
+    ufw allow "${XUI_PORT}/tcp" comment 'x-ui panel'
+
+    for port in "${XRAY_PORTS[@]}"; do
+        ufw allow "${port}/tcp" comment "x-ui / xray :${port}"
+    done
+
+    [[ "$ALLOW_PORT_54325" == "1" ]] && ufw allow 54325/tcp comment 'Service 54325'
+
+    ufw --force enable
+    ufw reload
+fi
+
+echo ">>> Настройка и проверка службы SSH на порт ${SSH_PORT}..."
+
+SSHD_CONFIG="/etc/ssh/sshd_config"
+mkdir -p /etc/ssh/sshd_config.d
+
+sed -i -E 's/^[[:space:]]*Port[[:space:]]+/# Disabled: &/' "$SSHD_CONFIG"
+shopt -s nullglob
+for file in /etc/ssh/sshd_config.d/*.conf; do
+    [[ "$(basename "$file")" == "99-custom-port.conf" ]] && continue
+    sed -i -E 's/^[[:space:]]*Port[[:space:]]+/# Disabled: &/' "$file"
+done
+shopt -u nullglob
+
+cat > /etc/ssh/sshd_config.d/99-custom-port.conf <<EOF
+Port ${SSH_PORT}
+EOF
+chmod 644 /etc/ssh/sshd_config.d/99-custom-port.conf
+
+systemctl disable --now ssh.socket 2>/dev/null || true
+systemctl enable ssh.service
+sshd -t
+systemctl restart ssh
+sleep 2
+
+EFFECTIVE_SSH_PORT="$(sshd -T 2>/dev/null | awk '$1 == "port" {print $2; exit}')"
+if [[ "$EFFECTIVE_SSH_PORT" != "$SSH_PORT" ]]; then
+    echo "❌ SSH не применил порт ${SSH_PORT}. Фактический: ${EFFECTIVE_SSH_PORT}"
     exit 1
 fi
-echo "✓ SWAP активен."
+echo "✓ SSH успешно работает на порту ${SSH_PORT} (UFW предварительно открыт)."
 
 
 ###############################################################################
-# 12. CLOUDFLARE WARP (WARP-CLI SOCKS5 PROXY)
+# 6. CLOUDFLARE WARP (SOCKS5 127.0.0.1:40000)
 ###############################################################################
 
-echo
-echo "======================================================================"
-echo " 🌐 Установка и настройка Cloudflare WARP"
-echo "======================================================================"
+if [[ "$INSTALL_WARP" == "1" ]]; then
+    echo ">>> Установка и настройка Cloudflare WARP..."
 
-install_cloudflare_warp() {
-    local keyring="/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg"
-    local list_file="/etc/apt/sources.list.d/cloudflare-client.list"
-    local codename="${VERSION_CODENAME:-noble}"
+    install_cloudflare_warp() {
+        local keyring="/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg"
+        local list_file="/etc/apt/sources.list.d/cloudflare-client.list"
+        local repo_codename=""
 
-    echo ">>> Импорт GPG ключа Cloudflare..."
-    curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | \
-        gpg --yes --dearmor -o "$keyring"
+        case "$OS_ID" in
+            ubuntu)
+                case "$OS_CODENAME" in
+                    noble|jammy|focal) repo_codename="$OS_CODENAME" ;;
+                    *) repo_codename="" ;;
+                esac
+                ;;
+            debian)
+                case "$OS_CODENAME" in
+                    bookworm|bullseye) repo_codename="$OS_CODENAME" ;;
+                    *) repo_codename="" ;;
+                esac
+                ;;
+        esac
 
-    echo ">>> Подключение репозитория (${codename})..."
-    echo "deb [signed-by=${keyring}] https://pkg.cloudflareclient.com/ ${codename} main" > "$list_file"
+        if [[ -z "$repo_codename" ]]; then
+            echo "⚠️️ Репозиторий Cloudflare WARP не поддерживает ${OS_ID} '${OS_CODENAME}'."
+            if [[ "$WARP_MANDATORY" == "1" ]]; then
+                echo "❌ Ошибка: WARP объявлен обязательным (WARP_MANDATORY=1). Прерывание."
+                return 1
+            else
+                echo "ℹ️ Пропуск установки WARP (WARP_MANDATORY=0)."
+                return 0
+            fi
+        fi
 
-    apt-get update
-    apt-get install -y cloudflare-warp
+        curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor -o "$keyring"
+        echo "deb [signed-by=${keyring}] https://pkg.cloudflareclient.com/ ${repo_codename} main" > "$list_file"
 
-    echo ">>> Запуск службы warp-svc..."
-    systemctl enable --now warp-svc
-    sleep 3
+        apt-get update
+        if apt-get install -y cloudflare-warp; then
+            systemctl enable --now warp-svc
+            sleep 3
+            warp-cli --accept-tos registration new 2>/dev/null || true
+            warp-cli --accept-tos mode proxy
+            warp-cli --accept-tos proxy port "$WARP_PROXY_PORT" 2>/dev/null || true
+            warp-cli --accept-tos connect
+            sleep 3
+            echo "✓ Cloudflare WARP настроен в режиме SOCKS5 (127.0.0.1:${WARP_PROXY_PORT})."
+        else
+            echo "⚠️ Ошибка установки пакета cloudflare-warp."
+            [[ "$WARP_MANDATORY" == "1" ]] && return 1 || return 0
+        fi
+    }
 
-    echo ">>> Регистрация и настройка warp-cli..."
-    # Проверка существующей регистрации
-    if ! warp-cli --accept-tos status 2>/dev/null | grep -qi "Registration missing"; then
-        echo "Регистрация уже выполнена или обновляется..."
-    fi
-
-    warp-cli --accept-tos registration new 2>/dev/null || true
-    warp-cli --accept-tos mode proxy
-    warp-cli --accept-tos proxy port "$WARP_PROXY_PORT" 2>/dev/null || true
-    warp-cli --accept-tos connect
-
-    echo "Ожидание подключения WARP..."
-    sleep 4
-
-    echo ">>> Статус Cloudflare WARP:"
-    warp-cli --accept-tos status || true
-
-    echo ">>> Проверка маршрута через WARP SOCKS5 (порт ${WARP_PROXY_PORT}):"
-    local trace_output
-    if trace_output="$(curl --socks5 "127.0.0.1:${WARP_PROXY_PORT}" -fsSL --connect-timeout 5 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)"; then
-        local warp_status
-        warp_status="$(echo "$trace_output" | grep '^warp=' || true)"
-        local warp_ip
-        warp_ip="$(echo "$trace_output" | grep '^ip=' || true)"
-        echo "✓ WARP SOCKS5 активен: ${warp_status}, ${warp_ip}"
-    else
-        echo "⚠️️ Внимание: WARP SOCKS5 пока не вернул ответ, служба продолжит работу в фоне."
-    fi
-}
-
-install_cloudflare_warp
+    install_cloudflare_warp
+fi
 
 
 ###############################################################################
-# 13. NGINX (ТОЛЬКО IPV4)
+# 7. NGINX
 ###############################################################################
 
-echo
 echo ">>> Настройка Nginx..."
 
 mkdir -p /var/www/acme/.well-known/acme-challenge
 rm -f /etc/nginx/sites-enabled/default
 
-# Убран сокет [::]:80 для корректной работы с отключенным IPv6
-cat > /etc/nginx/sites-available/cloud-node <<'EOF'
+cat > /etc/nginx/sites-available/cloud-node <<EOF
 server {
     listen 80 default_server;
+$( [[ "$DISABLE_IPV6" != "1" ]] && echo "    listen [::]:80 default_server;" )
     server_name _;
 
     root /var/www/acme;
@@ -357,568 +364,7 @@ systemctl restart nginx
 
 
 ###############################################################################
-# 14. MOTD
-###############################################################################
-
-echo
-echo ">>> Настройка MOTD..."
-
-cat > /etc/update-motd.d/99-custom-sysinfo <<'EOF'
-#!/usr/bin/env bash
-
-echo
-echo "╔══════════════════════════════════════════════════════════════════╗"
-echo "║                      ☁️  CLOUD NODE                              ║"
-echo "╚══════════════════════════════════════════════════════════════════╝"
-echo
-
-echo "🕒 $(date '+%Y-%m-%d %H:%M:%S')"
-echo "⏱ Uptime: $(uptime -p)"
-echo
-
-echo "🌐 NETWORK"
-ip -4 -brief addr show scope global 2>/dev/null || true
-echo
-
-echo "🛡️ CLOUDFLARE WARP"
-if ss -lnt 2>/dev/null | grep -qE ":40000[[:space:]]"; then
-    WARP_IP="$(curl -s --socks5 127.0.0.1:40000 --max-time 1 https://api.ipify.org 2>/dev/null || true)"
-    if [[ -n "$WARP_IP" ]]; then
-        echo "  ✓ Активен (SOCKS5 127.0.0.1:40000 | IP: ${WARP_IP})"
-    else
-        echo "  ✓ Активен (SOCKS5 127.0.0.1:40000)"
-    fi
-elif command -v warp-cli >/dev/null 2>&1 && warp-cli --accept-tos status 2>/dev/null | grep -qi "Connected"; then
-    echo "  ✓ Активен (Connected)"
-else
-    echo "  ✗ Не активен"
-fi
-echo
-
-echo "📡 PING"
-printf "Yandex: "
-ping -c 1 -W 1 77.88.8.8 >/dev/null 2>&1 && echo "OK" || echo "FAIL"
-echo
-
-echo "🖥 SYSTEM"
-echo "Load: $(cut -d' ' -f1-3 /proc/loadavg)"
-
-if command -v sensors >/dev/null 2>&1; then
-    CPU_TEMP="$(sensors 2>/dev/null | awk '/Package id 0:/ {print $4; exit}')"
-    [[ -n "${CPU_TEMP}" ]] && echo "CPU: ${CPU_TEMP}"
-fi
-
-if command -v nvme >/dev/null 2>&1; then
-    NVME_TEMP="$(nvme smart-log /dev/nvme0 2>/dev/null | awk -F: '/temperature/ {print $2; exit}' | xargs)"
-    [[ -n "${NVME_TEMP}" ]] && echo "NVMe: ${NVME_TEMP}"
-fi
-echo
-
-echo "💾 MEMORY"
-free -h
-echo
-
-echo "💽 DISK"
-df -h / | tail -n 1
-echo
-
-echo "📊 INODES"
-df -ih / | tail -n 1
-echo
-
-echo "🔌 CONNECTIONS"
-echo "TCP: $(ss -tan 2>/dev/null | tail -n +2 | wc -l)"
-echo "UDP: $(ss -uan 2>/dev/null | tail -n +2 | wc -l)"
-echo
-
-echo "👤 SSH"
-who 2>/dev/null || true
-echo
-
-echo "⚙️ SERVICES"
-for service in nginx ssh x-ui warp-svc docker; do
-    if systemctl is-active --quiet "$service" 2>/dev/null; then
-        echo "  ✓ ${service}"
-    else
-        echo "  ✗ ${service}"
-    fi
-done
-echo
-
-echo "📦 DOCKER"
-if command -v docker >/dev/null 2>&1; then
-    docker ps --format '  {{.Names}} — {{.Status}}' 2>/dev/null || true
-else
-    echo "  Docker не установлен"
-fi
-echo
-
-echo "🔐 FIREWALL"
-ufw status 2>/dev/null | head -n 12 || true
-echo
-echo "=================================================================="
-EOF
-
-chmod +x /etc/update-motd.d/99-custom-sysinfo
-
-###############################################################################
-# 15. ДИРЕКТОРИИ И КЛЮЧИ
-###############################################################################
-
-mkdir -p /usr/local/x-ui/bin
-mkdir -p "$BACKUP_DIR"
-mkdir -p "$PRE_UPDATE_DIR"
-
-chmod 700 "$BACKUP_DIR"
-chmod 700 "$PRE_UPDATE_DIR"
-
-if [[ ! -f /root/.mssql_health.key ]]; then
-    umask 077
-    openssl rand -base64 32 > /root/.mssql_health.key
-    chmod 600 /root/.mssql_health.key
-fi
-
-
-###############################################################################
-# 16. X-UI HEALTH CHECK (ПОРТЫ 2053 И 8443)
-###############################################################################
-
-echo
-echo ">>> Создание x-ui healthcheck..."
-
-cat > /usr/local/sbin/xui-health.sh <<'EOF'
-#!/usr/bin/env bash
-
-set -u
-
-LOG="/var/log/xui-health.log"
-SERVICE="x-ui"
-CHECK_PORTS=("2053" "8443")
-
-need_restart=0
-reason=""
-
-if ! systemctl is-active --quiet "$SERVICE"; then
-    need_restart=1
-    reason="служба x-ui не активна"
-elif ! pgrep -af 'xray' >/dev/null 2>&1; then
-    need_restart=1
-    reason="процесс xray не найден"
-else
-    for port in "${CHECK_PORTS[@]}"; do
-        if ! ss -lnt 2>/dev/null | grep -qE ":${port}[[:space:]]"; then
-            need_restart=1
-            reason="порт ${port} не слушается"
-            break
-        fi
-    done
-fi
-
-if [[ "$need_restart" -eq 1 ]]; then
-    echo "$(date '+%F %T') [RESTART] Причина: ${reason}" >> "$LOG"
-    logger -t xui-health "x-ui restart. Reason: ${reason}"
-    systemctl restart "$SERVICE"
-    sleep 5
-    if systemctl is-active --quiet "$SERVICE"; then
-        echo "$(date '+%F %T') [OK] x-ui восстановлен" >> "$LOG"
-    else
-        echo "$(date '+%F %T') [FAIL] x-ui не восстановлен" >> "$LOG"
-        systemctl status "$SERVICE" --no-pager >> "$LOG" 2>&1 || true
-    fi
-else
-    echo "$(date '+%F %T') [OK] x-ui + Xray + ports 2053/8443" >> "$LOG"
-fi
-EOF
-
-chmod 700 /usr/local/sbin/xui-health.sh
-touch /var/log/xui-health.log
-chmod 600 /var/log/xui-health.log
-
-
-###############################################################################
-# 17. X-UI BACKUP
-###############################################################################
-
-echo
-echo ">>> Создание резервного копирования x-ui..."
-
-cat > /usr/local/sbin/xui-backup.sh <<'EOF'
-#!/usr/bin/env bash
-
-set -Eeuo pipefail
-
-BACKUP_DIR="/root/xui_backups"
-mkdir -p "$BACKUP_DIR"
-chmod 700 "$BACKUP_DIR"
-
-DATE="$(date '+%Y-%m-%d_%H-%M-%S')"
-BACKUP_FILE="${BACKUP_DIR}/x-ui_${DATE}.tar.gz"
-TMP_FILE="${BACKUP_FILE}.tmp"
-
-SOURCE_LIST=()
-[[ -d /etc/x-ui ]] && SOURCE_LIST+=("etc/x-ui")
-[[ -d /usr/local/x-ui ]] && SOURCE_LIST+=("usr/local/x-ui")
-[[ -f /usr/bin/x-ui ]] && SOURCE_LIST+=("usr/bin/x-ui")
-[[ -f /etc/systemd/system/x-ui.service ]] && SOURCE_LIST+=("etc/systemd/system/x-ui.service")
-[[ -f /etc/default/x-ui ]] && SOURCE_LIST+=("etc/default/x-ui")
-[[ -d /root/cert ]] && SOURCE_LIST+=("root/cert")
-[[ -d /root/.acme.sh ]] && SOURCE_LIST+=("root/.acme.sh")
-
-if [[ "${#SOURCE_LIST[@]}" -eq 0 ]]; then
-    echo "No x-ui data found."
-    exit 0
-fi
-
-tar -czf "$TMP_FILE" -C / "${SOURCE_LIST[@]}"
-mv "$TMP_FILE" "$BACKUP_FILE"
-chmod 600 "$BACKUP_FILE"
-
-find "$BACKUP_DIR" -type f -name 'x-ui_*.tar.gz' -mtime +14 -delete
-echo "Backup created: $BACKUP_FILE"
-EOF
-
-chmod 700 /usr/local/sbin/xui-backup.sh
-
-
-###############################################################################
-# 18. SAFE X-UI UPDATE / ROLLBACK
-###############################################################################
-
-echo
-echo ">>> Создание безопасного updater 3x-ui..."
-
-cat > /usr/local/sbin/xui-update-safe.sh <<'EOF'
-#!/usr/bin/env bash
-
-set -Eeuo pipefail
-
-LOG="/var/log/xui-auto-update.log"
-LOCK_FILE="/run/lock/xui-update-safe.lock"
-BACKUP_DIR="/root/xui_backups"
-PRE_UPDATE_DIR="${BACKUP_DIR}/pre-update"
-UPDATE_URL="https://raw.githubusercontent.com/MHSanaei/3x-ui/main/update.sh"
-
-exec >> "$LOG" 2>&1
-
-mkdir -p "$PRE_UPDATE_DIR"
-chmod 700 "$BACKUP_DIR"
-chmod 700 "$PRE_UPDATE_DIR"
-
-exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
-    echo "[$(date '+%F %T')] UPDATE SKIPPED: another update is running."
-    exit 0
-fi
-
-log() { echo "[$(date '+%F %T')] $*"; }
-
-notify_error() {
-    local message="$1"
-    logger -p daemon.err -t xui-update "$message"
-    if command -v wall >/dev/null 2>&1; then
-        wall "x-ui UPDATE: ${message}" 2>/dev/null || true
-    fi
-}
-
-create_snapshot() {
-    local label="$1"
-    local dir="${PRE_UPDATE_DIR}/${label}"
-    local archive="${dir}/x-ui-state.tar.gz"
-    rm -rf "$dir"
-    mkdir -p "$dir"
-    chmod 700 "$dir"
-
-    local source_list=()
-    [[ -d /etc/x-ui ]] && source_list+=("etc/x-ui")
-    [[ -d /usr/local/x-ui ]] && source_list+=("usr/local/x-ui")
-    [[ -f /usr/bin/x-ui ]] && source_list+=("usr/bin/x-ui")
-    [[ -f /etc/systemd/system/x-ui.service ]] && source_list+=("etc/systemd/system/x-ui.service")
-    [[ -f /etc/default/x-ui ]] && source_list+=("etc/default/x-ui")
-    [[ -d /root/cert ]] && source_list+=("root/cert")
-
-    if [[ "${#source_list[@]}" -eq 0 ]]; then
-        log "ERROR: nothing to backup."
-        return 1
-    fi
-
-    tar -czf "$archive" -C / "${source_list[@]}"
-    chmod 600 "$archive"
-    echo "$archive"
-}
-
-restore_snapshot() {
-    local archive="$1"
-    if [[ ! -f "$archive" ]]; then
-        log "ERROR: rollback archive not found: $archive"
-        return 1
-    fi
-    log "Stopping x-ui before rollback..."
-    systemctl stop x-ui 2>/dev/null || true
-    rm -rf /etc/x-ui /usr/local/x-ui /root/cert
-    rm -f /usr/bin/x-ui /etc/systemd/system/x-ui.service /etc/default/x-ui
-    tar -xzf "$archive" -C /
-    systemctl daemon-reload
-    systemctl enable x-ui >/dev/null 2>&1 || true
-    systemctl start x-ui
-}
-
-health_check() {
-    log "Waiting 10 seconds for x-ui..."
-    sleep 10
-
-    if ! systemctl is-active --quiet x-ui; then
-        log "Healthcheck: systemd x-ui is NOT active."
-        return 1
-    fi
-
-    if ! ss -lnt 2>/dev/null | grep -qE ":8784[[:space:]]"; then
-        log "Healthcheck: panel port 8784 is not listening."
-        return 1
-    fi
-
-    if ! pgrep -af 'xray' >/dev/null 2>&1; then
-        log "Healthcheck: xray process is NOT running."
-        return 1
-    fi
-
-    for port in 2053 8443; do
-        if ! ss -lnt 2>/dev/null | grep -qE ":${port}[[:space:]]"; then
-            log "Healthcheck: Xray port ${port} is NOT listening."
-            return 1
-        fi
-    done
-    return 0
-}
-
-main() {
-    log "============================================================"
-    log "3x-ui SAFE AUTO UPDATE"
-    log "============================================================"
-
-    if ! systemctl is-active --quiet x-ui; then
-        log "x-ui is not active before update."
-        notify_error "x-ui was inactive before scheduled update."
-        exit 1
-    fi
-
-    local pre_archive
-    pre_archive="$(create_snapshot "current")"
-    if [[ ! -f "$pre_archive" ]]; then
-        log "ERROR: pre-update backup failed."
-        notify_error "x-ui update aborted: backup failed."
-        exit 1
-    fi
-
-    local tmp_update="/tmp/xui-update.sh"
-    rm -f "$tmp_update"
-    if ! curl -4 -fL --retry 3 --connect-timeout 15 --max-time 300 "$UPDATE_URL" -o "$tmp_update"; then
-        log "ERROR: failed to download updater."
-        notify_error "3x-ui update aborted: updater download failed."
-        rm -f "$tmp_update"
-        exit 1
-    fi
-    chmod 700 "$tmp_update"
-
-    if ! bash "$tmp_update"; then
-        log "Official updater returned an error. Starting rollback..."
-        rm -f "$tmp_update"
-        if restore_snapshot "$pre_archive" && health_check; then
-            log "ROLLBACK SUCCESS"
-            notify_error "3x-ui update failed; previous version restored successfully."
-            exit 0
-        fi
-        log "CRITICAL: rollback failed."
-        notify_error "CRITICAL: 3x-ui update and rollback both failed."
-        exit 1
-    fi
-    rm -f "$tmp_update"
-
-    if health_check; then
-        log "UPDATE SUCCESS"
-        exit 0
-    fi
-
-    log "Update healthcheck FAILED. Starting rollback..."
-    create_snapshot "failed-$(date '+%Y%m%d-%H%M%S')" 2>/dev/null || true
-    if restore_snapshot "$pre_archive" && health_check; then
-        log "ROLLBACK SUCCESS"
-        notify_error "3x-ui update failed; automatic rollback succeeded."
-        exit 0
-    fi
-
-    log "CRITICAL: ROLLBACK FAILED"
-    notify_error "CRITICAL: 3x-ui update failed and automatic rollback failed."
-    exit 1
-}
-
-main "$@"
-EOF
-
-chmod 700 /usr/local/sbin/xui-update-safe.sh
-touch /var/log/xui-auto-update.log
-chmod 600 /var/log/xui-auto-update.log
-
-
-###############################################################################
-# 19. ОБНОВЛЕНИЯ СИСТЕМЫ И ГЕО-БАЗ
-###############################################################################
-
-cat > /usr/local/sbin/system-update.sh <<'EOF'
-#!/usr/bin/env bash
-set -Eeuo pipefail
-export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get upgrade -y
-apt-get autoremove -y
-apt-get autoclean
-if [[ -f /var/run/reboot-required ]]; then
-    logger -t system-update "System reboot required after update."
-fi
-EOF
-chmod 700 /usr/local/sbin/system-update.sh
-
-cat > /usr/local/sbin/update-geo.sh <<'EOF'
-#!/usr/bin/env bash
-set -u
-LOG="/var/log/xui-geo-update.log"
-exec >> "$LOG" 2>&1
-TARGET_DIR="/usr/local/x-ui/bin"
-mkdir -p "$TARGET_DIR"
-
-update_file() {
-    local url="$1"
-    local dest="$2"
-    local tmp="${dest}.tmp"
-    if curl -fsSL --retry 3 --connect-timeout 15 -o "$tmp" "$url" && [[ -s "$tmp" ]]; then
-        mv -f "$tmp" "$dest"
-        echo "$(date '+%F %T') OK: $(basename "$dest")"
-    else
-        rm -f "$tmp"
-        echo "$(date '+%F %T') ERROR: failed to update $(basename "$dest")"
-    fi
-}
-
-update_file "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat" "${TARGET_DIR}/geosite.dat"
-update_file "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat" "${TARGET_DIR}/geoip.dat"
-update_file "https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geosite.dat" "${TARGET_DIR}/geosite_RU.dat"
-
-if command -v x-ui >/dev/null 2>&1; then
-    x-ui update-all-geofiles >/dev/null 2>&1 || true
-fi
-EOF
-chmod 700 /usr/local/sbin/update-geo.sh
-touch /var/log/xui-geo-update.log
-chmod 600 /var/log/xui-geo-update.log
-
-
-###############################################################################
-# 20. SSL RENEWAL WRAPPER
-###############################################################################
-
-cat > /usr/local/bin/renew-ssl.sh <<'EOF'
-#!/usr/bin/env bash
-set -Eeuo pipefail
-LOG="/var/log/acme-renew.log"
-ACME="/root/.acme.sh/acme.sh"
-NGINX_WAS_ACTIVE=0
-exec >> "$LOG" 2>&1
-
-if systemctl is-active --quiet nginx; then
-    NGINX_WAS_ACTIVE=1
-    systemctl stop nginx
-fi
-
-cleanup() {
-    local exit_code=$?
-    if [[ "$NGINX_WAS_ACTIVE" -eq 1 ]]; then
-        systemctl start nginx || true
-    fi
-    exit "$exit_code"
-}
-trap cleanup EXIT
-
-if [[ ! -x "$ACME" ]]; then
-    echo "ERROR: acme.sh not found"
-    exit 1
-fi
-
-"$ACME" --cron --home "/root/.acme.sh"
-EOF
-chmod 700 /usr/local/bin/renew-ssl.sh
-touch /var/log/acme-renew.log
-chmod 600 /var/log/acme-renew.log
-
-
-###############################################################################
-# 21. SSH
-###############################################################################
-
-echo
-echo ">>> Настройка SSH..."
-
-SSHD_CONFIG="/etc/ssh/sshd_config"
-mkdir -p /etc/ssh/sshd_config.d
-
-sed -i -E 's/^[[:space:]]*Port[[:space:]]+/# Disabled by VPS setup: &/' "$SSHD_CONFIG"
-
-shopt -s nullglob
-for file in /etc/ssh/sshd_config.d/*.conf; do
-    [[ "$(basename "$file")" == "99-custom-port.conf" ]] && continue
-    sed -i -E 's/^[[:space:]]*Port[[:space:]]+/# Disabled by VPS setup: &/' "$file"
-done
-shopt -u nullglob
-
-cat > /etc/ssh/sshd_config.d/99-custom-port.conf <<EOF
-# Managed by VPS setup ${SCRIPT_VERSION}
-Port ${SSH_PORT}
-EOF
-chmod 644 /etc/ssh/sshd_config.d/99-custom-port.conf
-
-systemctl disable --now ssh.socket 2>/dev/null || true
-systemctl enable ssh.service
-sshd -t
-systemctl restart ssh
-sleep 2
-
-EFFECTIVE_SSH_PORT="$(sshd -T 2>/dev/null | awk '$1 == "port" {print $2; exit}')"
-if [[ "$EFFECTIVE_SSH_PORT" != "$SSH_PORT" ]]; then
-    echo "❌ Эффективный SSH порт не равен ${SSH_PORT}."
-    exit 1
-fi
-echo "✓ SSH слушает порт ${SSH_PORT}"
-
-
-###############################################################################
-# 22. UFW & ICMP (IPV4 ONLY)
-###############################################################################
-
-echo
-echo ">>> Настройка firewall..."
-
-ufw --force reset
-ufw default deny incoming
-ufw default allow outgoing
-
-ufw allow "${SSH_PORT}/tcp" comment 'SSH'
-ufw allow 80/tcp comment 'HTTP'
-ufw allow 443/tcp comment 'HTTPS'
-ufw allow 2053/tcp comment 'x-ui / xray'
-ufw allow 2096/tcp comment 'x-ui'
-ufw allow 8443/tcp comment 'x-ui / xray'
-ufw allow 8784/tcp comment 'x-ui panel'
-ufw allow 54325/tcp comment 'Service 54325'
-
-UFW_BEFORE="/etc/ufw/before.rules"
-if [[ -f "$UFW_BEFORE" ]]; then
-    sed -i 's/-p icmp --icmp-type echo-request -j ACCEPT/-p icmp --icmp-type echo-request -j DROP/' "$UFW_BEFORE" || true
-fi
-
-ufw --force enable
-ufw reload
-
-
-###############################################################################
-# 23. NGINX STOP & 3X-UI УСТАНОВКА
+# 8. УСТАНОВКА 3X-UI И ЭТАЛОННАЯ БАЗА
 ###############################################################################
 
 echo
@@ -932,19 +378,24 @@ if systemctl is-active --quiet nginx; then
     systemctl stop nginx
 fi
 
-restore_nginx_on_failure() {
+restore_nginx_emergency() {
     local exit_code=$?
-    if [[ "$NGINX_WAS_ACTIVE" -eq 1 ]]; then
-        systemctl start nginx || true
-    fi
+    [[ "$NGINX_WAS_ACTIVE" -eq 1 ]] && systemctl start nginx || true
     exit "$exit_code"
 }
-trap restore_nginx_on_failure EXIT
+trap restore_nginx_emergency EXIT
 
 TMP_XUI_INSTALL="/tmp/3x-ui-install.sh"
 rm -f "$TMP_XUI_INSTALL"
 curl -4 -fL --retry 3 --connect-timeout 15 --max-time 300 "$XUI_INSTALL_URL" -o "$TMP_XUI_INSTALL"
 chmod 700 "$TMP_XUI_INSTALL"
+
+# Sanity-check установщика перед выполнением под root
+if ! grep -qi "3x-ui" "$TMP_XUI_INSTALL"; then
+    echo "❌ Ошибка: скачанный скрипт 3x-ui не прошёл проверку подлинности."
+    rm -f "$TMP_XUI_INSTALL"
+    exit 1
+fi
 
 export XUI_NONINTERACTIVE=1
 export XUI_DB_TYPE="sqlite"
@@ -958,14 +409,9 @@ rm -f "$TMP_XUI_INSTALL"
 ACME="/root/.acme.sh/acme.sh"
 if [[ -x "$ACME" ]]; then
     "$ACME" --uninstall-cronjob >/dev/null 2>&1 || true
-    echo "✓ Штатный cron acme.sh удалён"
 fi
 
-
-###############################################################################
-# 24. ЭТАЛОННАЯ БАЗА 3X-UI
-###############################################################################
-
+# Восстановление эталонной конфигурации
 restore_custom_database() {
     local reg_choice="${REG_CHOICE:-}"
     local token="${GH_TOKEN:-}"
@@ -1006,7 +452,7 @@ restore_custom_database() {
     [[ -z "$db_pass" ]] && { echo "❌ Пароль базы не указан."; return 1; }
 
     systemctl stop x-ui 2>/dev/null || true
-    /usr/local/sbin/xui-backup.sh
+    /usr/local/sbin/xui-backup.sh 2>/dev/null || true
 
     local tmp_db="/tmp/${db_file}"
     rm -f "$tmp_db"
@@ -1026,7 +472,7 @@ restore_custom_database() {
 
     if openssl enc -d -aes-256-cbc -pbkdf2 -in "$tmp_db" -pass pass:"$db_pass" 2>/dev/null | tar -xzf - -O > "$decrypted_db" 2>/dev/null; then
         if [[ ! -s "$decrypted_db" ]] || ! sqlite3 "$decrypted_db" "PRAGMA integrity_check;" 2>/dev/null | grep -qx "ok"; then
-            echo "❌ SQLite integrity_check не пройден."
+            echo "❌ Ошибка integrity_check SQLite."
             rm -f "$tmp_db" "$decrypted_db"
             systemctl start x-ui
             return 1
@@ -1036,10 +482,10 @@ restore_custom_database() {
         sqlite3 /etc/x-ui/x-ui.db "UPDATE client_traffics SET up = 0, down = 0;" 2>/dev/null || true
         sqlite3 /etc/x-ui/x-ui.db "UPDATE inbounds SET up = 0, down = 0;" 2>/dev/null || true
         sqlite3 /etc/x-ui/x-ui.db "DELETE FROM inbound_client_ips;" 2>/dev/null || true
-        echo "✓ База ${db_file} успешно установлена."
+        echo "✓ База ${db_file} установлена, счетчики трафика обнулены."
         rm -f "$tmp_db" "$decrypted_db"
     else
-        echo "❌ Ошибка расшифровки базы."
+        echo "❌ Ошибка расшифровки (неверный пароль)."
         rm -f "$tmp_db" "$decrypted_db"
         systemctl start x-ui
         return 1
@@ -1050,6 +496,377 @@ restore_custom_database() {
     systemctl is-active --quiet x-ui
 }
 
+# Каталоги обслуживания
+mkdir -p /usr/local/x-ui/bin "$BACKUP_DIR" "$PRE_UPDATE_DIR"
+chmod 700 "$BACKUP_DIR" "$PRE_UPDATE_DIR"
+
+
+###############################################################################
+# 9. СЛУЖБЫ ОБСЛУЖИВАНИЯ
+###############################################################################
+
+# 9.1. BACKUP
+cat > /usr/local/sbin/xui-backup.sh <<'EOF'
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+BACKUP_DIR="/root/xui_backups"
+mkdir -p "$BACKUP_DIR"
+chmod 700 "$BACKUP_DIR"
+
+DATE="$(date '+%Y-%m-%d_%H-%M-%S')"
+BACKUP_FILE="${BACKUP_DIR}/x-ui_${DATE}.tar.gz"
+TMP_FILE="${BACKUP_FILE}.tmp"
+
+SOURCE_LIST=()
+[[ -d /etc/x-ui ]] && SOURCE_LIST+=("etc/x-ui")
+[[ -d /usr/local/x-ui ]] && SOURCE_LIST+=("usr/local/x-ui")
+[[ -f /usr/bin/x-ui ]] && SOURCE_LIST+=("usr/bin/x-ui")
+[[ -f /etc/systemd/system/x-ui.service ]] && SOURCE_LIST+=("etc/systemd/system/x-ui.service")
+[[ -f /etc/default/x-ui ]] && SOURCE_LIST+=("etc/default/x-ui")
+[[ -d /root/cert ]] && SOURCE_LIST+=("root/cert")
+[[ -d /root/.acme.sh ]] && SOURCE_LIST+=("root/.acme.sh")
+
+[[ "${#SOURCE_LIST[@]}" -eq 0 ]] && exit 0
+
+tar -czf "$TMP_FILE" -C / "${SOURCE_LIST[@]}"
+
+if ! tar -tzf "$TMP_FILE" >/dev/null 2>&1; then
+    echo "ERROR: Backup archive verification failed!"
+    rm -f "$TMP_FILE"
+    exit 1
+fi
+
+mv "$TMP_FILE" "$BACKUP_FILE"
+chmod 600 "$BACKUP_FILE"
+find "$BACKUP_DIR" -type f -name 'x-ui_*.tar.gz' -mtime +14 -delete
+echo "Backup created and verified: $BACKUP_FILE"
+EOF
+chmod 700 /usr/local/sbin/xui-backup.sh
+
+
+# 9.2. HEALTHCHECK С ЗАЩИТОЙ ОТ RESTART-LOOP
+XRAY_PORTS_DEF="$(printf '"%s" ' "${XRAY_PORTS[@]}")"
+
+cat > /usr/local/sbin/xui-health.sh <<EOF
+#!/usr/bin/env bash
+
+set -u
+LOG="/var/log/xui-health.log"
+SERVICE="x-ui"
+CHECK_PORTS=(${XRAY_PORTS_DEF})
+RESTART_TRACK_FILE="/run/xui-restarts.log"
+MAX_RESTARTS_PER_HOUR=3
+
+need_restart=0
+reason=""
+
+if ! systemctl is-active --quiet "\$SERVICE"; then
+    need_restart=1
+    reason="служба x-ui не активна"
+elif ! pgrep -af 'xray' >/dev/null 2>&1; then
+    need_restart=1
+    reason="процесс xray не найден"
+else
+    for port in "\${CHECK_PORTS[@]}"; do
+        if ! ss -lnt 2>/dev/null | grep -qE ":\${port}[[:space:]]"; then
+            need_restart=1
+            reason="порт \${port} не слушается"
+            break
+        fi
+    done
+fi
+
+check_restart_limit() {
+    local now
+    now="\$(date +%s)"
+    local one_hour_ago=\$((now - 3600))
+    local recent_restarts=0
+    local filtered_lines=()
+
+    if [[ -f "\$RESTART_TRACK_FILE" ]]; then
+        while read -r ts; do
+            if [[ "\$ts" =~ ^[0-9]+$ ]] && [[ "\$ts" -ge "\$one_hour_ago" ]]; then
+                recent_restarts=\$((recent_restarts + 1))
+                filtered_lines+=("\$ts")
+            fi
+        done < "\$RESTART_TRACK_FILE"
+    fi
+
+    if [[ "\$recent_restarts" -ge "\$MAX_RESTARTS_PER_HOUR" ]]; then
+        return 1
+    fi
+
+    filtered_lines+=("\$now")
+    printf "%s\n" "\${filtered_lines[@]}" > "\$RESTART_TRACK_FILE"
+    return 0
+}
+
+if [[ "\$need_restart" -eq 1 ]]; then
+    if ! check_restart_limit; then
+        echo "\$(date '+%F %T') [RESTART-LOOP BLOCKED] Превышен лимит (\${MAX_RESTARTS_PER_HOUR}/час). Перезапуск отменен. Требуется ручная проверка!" >> "\$LOG"
+        logger -t xui-health "Restart loop detected. Skipping automatic restart."
+        exit 0
+    fi
+
+    echo "\$(date '+%F %T') [RESTART] Причина: \${reason}" >> "\$LOG"
+    logger -t xui-health "x-ui restart. Reason: \${reason}"
+    systemctl restart "\$SERVICE"
+    sleep 5
+    if systemctl is-active --quiet "\$SERVICE"; then
+        echo "\$(date '+%F %T') [OK] x-ui восстановлен" >> "\$LOG"
+    else
+        echo "\$(date '+%F %T') [FAIL] x-ui не восстановился" >> "\$LOG"
+    fi
+else
+    echo "\$(date '+%F %T') [OK] x-ui + Xray + ports \${CHECK_PORTS[*]}" >> "\$LOG"
+fi
+EOF
+chmod 700 /usr/local/sbin/xui-health.sh
+touch /var/log/xui-health.log && chmod 600 /var/log/xui-health.log
+
+
+# 9.3. БЕЗОПАСНЫЙ UPDATER 3X-UI С ROLLBACK ЧЕРЕЗ .BAK
+cat > /usr/local/sbin/xui-update-safe.sh <<EOF
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+LOG="/var/log/xui-auto-update.log"
+MAINTENANCE_LOCK="/run/lock/vps-maintenance.lock"
+BACKUP_DIR="/root/xui_backups"
+PRE_UPDATE_DIR="\${BACKUP_DIR}/pre-update"
+UPDATE_URL="${XUI_UPDATE_URL}"
+CHECK_PORTS=(${XRAY_PORTS_DEF})
+
+exec >> "\$LOG" 2>&1
+mkdir -p "\$PRE_UPDATE_DIR"
+
+exec 9>"\$MAINTENANCE_LOCK"
+if ! flock -n 9; then
+    echo "[\$(date '+%F %T')] Update skipped: maintenance lock active."
+    exit 0
+fi
+
+log() { echo "[\$(date '+%F %T')] \$*"; }
+
+health_check() {
+    sleep 10
+    systemctl is-active --quiet x-ui || return 1
+    ss -lnt 2>/dev/null | grep -qE ":8784[[:space:]]" || return 1
+    pgrep -af 'xray' >/dev/null 2>&1 || return 1
+    for port in "\${CHECK_PORTS[@]}"; do
+        ss -lnt 2>/dev/null | grep -qE ":\${port}[[:space:]]" || return 1
+    done
+    return 0
+}
+
+create_snapshot() {
+    local label="\$1"
+    local dir="\${PRE_UPDATE_DIR}/\${label}"
+    local archive="\${dir}/x-ui-state.tar.gz"
+    local tmp_archive="\${archive}.tmp"
+
+    mkdir -p "\$dir"
+    local source_list=()
+    [[ -d /etc/x-ui ]] && source_list+=("etc/x-ui")
+    [[ -d /usr/local/x-ui ]] && source_list+=("usr/local/x-ui")
+    [[ -f /usr/bin/x-ui ]] && source_list+=("usr/bin/x-ui")
+    [[ -f /etc/systemd/system/x-ui.service ]] && source_list+=("etc/systemd/system/x-ui.service")
+    [[ -f /etc/default/x-ui ]] && source_list+=("etc/default/x-ui")
+    [[ -d /root/cert ]] && source_list+=("root/cert")
+
+    [[ "\${#source_list[@]}" -eq 0 ]] && return 1
+
+    tar -czf "\$tmp_archive" -C / "\${source_list[@]}"
+    if ! tar -tzf "\$tmp_archive" >/dev/null 2>&1; then
+        rm -f "\$tmp_archive"
+        return 1
+    fi
+    mv "\$tmp_archive" "\$archive"
+    chmod 600 "\$archive"
+    echo "\$archive"
+}
+
+restore_snapshot() {
+    local archive="\$1"
+    [[ ! -f "\$archive" ]] && return 1
+
+    if ! tar -tzf "\$archive" >/dev/null 2>&1; then
+        log "CRITICAL: Corrupted rollback archive. Aborting."
+        return 1
+    fi
+
+    log "Stopping x-ui..."
+    systemctl stop x-ui 2>/dev/null || true
+
+    local bak_suffix="rollback-bak-\$(date +%s)"
+    [[ -d /etc/x-ui ]] && mv /etc/x-ui "/etc/x-ui.\${bak_suffix}"
+    [[ -d /usr/local/x-ui ]] && mv /usr/local/x-ui "/usr/local/x-ui.\${bak_suffix}"
+    [[ -d /root/cert ]] && mv /root/cert "/root/cert.\${bak_suffix}"
+
+    if tar -xzf "\$archive" -C /; then
+        systemctl daemon-reload
+        systemctl enable x-ui >/dev/null 2>&1 || true
+        systemctl start x-ui
+
+        if health_check; then
+            log "Rollback verified. Removing temp backup..."
+            rm -rf "/etc/x-ui.\${bak_suffix}" "/usr/local/x-ui.\${bak_suffix}" "/root/cert.\${bak_suffix}"
+            return 0
+        fi
+    fi
+
+    log "Reverting from temp backup..."
+    systemctl stop x-ui 2>/dev/null || true
+    rm -rf /etc/x-ui /usr/local/x-ui /root/cert
+    [[ -d "/etc/x-ui.\${bak_suffix}" ]] && mv "/etc/x-ui.\${bak_suffix}" /etc/x-ui
+    [[ -d "/usr/local/x-ui.\${bak_suffix}" ]] && mv "/usr/local/x-ui.\${bak_suffix}" /usr/local/x-ui
+    [[ -d "/root/cert.\${bak_suffix}" ]] && mv "/root/cert.\${bak_suffix}" /root/cert
+    systemctl daemon-reload
+    systemctl start x-ui 2>/dev/null || true
+    return 1
+}
+
+main() {
+    systemctl is-active --quiet x-ui || exit 1
+    local pre_archive
+    pre_archive="\$(create_snapshot "current")"
+    [[ ! -f "\$pre_archive" ]] && exit 1
+
+    local tmp_update="/tmp/xui-update.sh"
+    rm -f "\$tmp_update"
+    if ! curl -4 -fL --retry 3 --connect-timeout 15 --max-time 300 "\$UPDATE_URL" -o "\$tmp_update"; then
+        rm -f "\$tmp_update"
+        exit 1
+    fi
+
+    if ! grep -qi "3x-ui" "\$tmp_update"; then
+        log "ERROR: downloaded script failed sanity check."
+        rm -f "\$tmp_update"
+        exit 1
+    fi
+    chmod 700 "\$tmp_update"
+
+    if ! bash "\$tmp_update"; then
+        rm -f "\$tmp_update"
+        restore_snapshot "\$pre_archive" && exit 0
+        exit 1
+    fi
+    rm -f "\$tmp_update"
+
+    health_check && exit 0
+
+    log "Healthcheck failed. Initiating rollback..."
+    create_snapshot "failed-\$(date '+%Y%m%d-%H%M%S')" 2>/dev/null || true
+    restore_snapshot "\$pre_archive" && exit 0
+    exit 1
+}
+
+main "\$@"
+EOF
+chmod 700 /usr/local/sbin/xui-update-safe.sh
+touch /var/log/xui-auto-update.log && chmod 600 /var/log/xui-auto-update.log
+
+
+# 9.4. ОБНОВЛЕНИЕ APT
+cat > /usr/local/sbin/system-update.sh <<'EOF'
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+export DEBIAN_FRONTEND=noninteractive
+LOG="/var/log/vps-system-update.log"
+MAINTENANCE_LOCK="/run/lock/vps-maintenance.lock"
+
+exec >> "$LOG" 2>&1
+
+exec 9>"$MAINTENANCE_LOCK"
+if ! flock -n 9; then
+    echo "[$(date '+%F %T')] System update skipped: maintenance lock active."
+    exit 0
+fi
+
+echo "[$(date '+%F %T')] Starting scheduled system update..."
+apt-get update
+apt-get upgrade -y
+apt-get autoremove -y
+apt-get autoclean
+
+if [[ -f /var/run/reboot-required ]]; then
+    echo "[$(date '+%F %T')] Reboot required! Scheduling graceful reboot in 2 minutes..."
+    logger -t system-update "Reboot required after updates. Rebooting..."
+    /sbin/shutdown -r +2 "Scheduled maintenance reboot after package updates"
+else
+    echo "[$(date '+%F %T')] Update complete. Reboot not required."
+fi
+EOF
+chmod 700 /usr/local/sbin/system-update.sh
+
+
+# 9.5. ГЕО-БАЗЫ И SSL
+cat > /usr/local/sbin/update-geo.sh <<'EOF'
+#!/usr/bin/env bash
+
+set -u
+LOG="/var/log/xui-geo-update.log"
+MAINTENANCE_LOCK="/run/lock/vps-maintenance.lock"
+TARGET_DIR="/usr/local/x-ui/bin"
+
+exec >> "$LOG" 2>&1
+exec 9>"$MAINTENANCE_LOCK"
+if ! flock -n 9; then
+    exit 0
+fi
+
+mkdir -p "$TARGET_DIR"
+
+update_file() {
+    local url="$1"
+    local dest="$2"
+    local tmp="${dest}.tmp"
+    if curl -fsSL --retry 3 --connect-timeout 15 -o "$tmp" "$url" && [[ -s "$tmp" ]]; then
+        mv -f "$tmp" "$dest"
+        echo "$(date '+%F %T') OK: $(basename "$dest")"
+    else
+        rm -f "$tmp"
+        echo "$(date '+%F %T') ERROR: $(basename "$dest")"
+    fi
+}
+
+update_file "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat" "${TARGET_DIR}/geosite.dat"
+update_file "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat" "${TARGET_DIR}/geoip.dat"
+update_file "https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geosite.dat" "${TARGET_DIR}/geosite_RU.dat"
+
+command -v x-ui >/dev/null 2>&1 && x-ui update-all-geofiles >/dev/null 2>&1 || true
+EOF
+chmod 700 /usr/local/sbin/update-geo.sh
+
+cat > /usr/local/bin/renew-ssl.sh <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+LOG="/var/log/acme-renew.log"
+ACME="/root/.acme.sh/acme.sh"
+NGINX_WAS_ACTIVE=0
+exec >> "$LOG" 2>&1
+
+if systemctl is-active --quiet nginx; then
+    NGINX_WAS_ACTIVE=1
+    systemctl stop nginx
+fi
+
+cleanup() {
+    local exit_code=$?
+    [[ "$NGINX_WAS_ACTIVE" -eq 1 ]] && systemctl start nginx || true
+    exit "$exit_code"
+}
+trap cleanup EXIT
+
+if [[ -x "$ACME" ]]; then
+    "$ACME" --cron --home "/root/.acme.sh"
+fi
+EOF
+chmod 700 /usr/local/bin/renew-ssl.sh
+
+# Запуск восстановления эталонной базы
 restore_custom_database
 
 # Восстанавливаем Nginx
@@ -1060,39 +877,34 @@ trap - EXIT
 
 
 ###############################################################################
-# 25. НАСТРОЙКА MAINTENANCE CRON
+# 10. CRON ПЛАНИРОВЩИК (/etc/cron.d/vps-maintenance)
 ###############################################################################
 
-echo
-echo ">>> Настройка maintenance cron..."
+echo ">>> Настройка расписания обслуживания..."
 
 cat > "$MAINTENANCE_FILE" <<'EOF'
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# === 1. ОБНОВЛЕНИЕ SSL-СЕРТИФИКАТОВ ACME.SH ===
+# 1. SSL ACME (ежедневно)
 16 10 * * * root /usr/local/bin/renew-ssl.sh
 
-# === 2. ЕЖЕДНЕВНЫЙ БЭКАП БАЗЫ X-UI ===
+# 2. Бэкап x-ui (ежедневно)
 0 3 * * * root /usr/local/sbin/xui-backup.sh
 
-# === 3. ЕЖЕНЕДЕЛЬНОЕ ОБНОВЛЕНИЕ СИСТЕМЫ И ПАКЕТОВ APT (СРЕДА) ===
-20 3 * * 3 root /usr/local/sbin/system-update.sh
+# 3. Обновление APT с умным ребутом (среда 03:30)
+30 3 * * 3 root /usr/local/sbin/system-update.sh
 
-# === 4. БЕЗОПАСНОЕ АВТО-ОБНОВЛЕНИЕ ПАНЕЛИ 3X-UI С ROLLBACK (ПЯТНИЦА) ===
+# 4. Обновление 3x-ui с rollback (пятница 04:30)
 30 4 * * 5 root /usr/local/sbin/xui-update-safe.sh
 
-# === 5. ПЛАНОВАЯ ПЕРЕЗАГРУЗКА VPS (ПТ В 05:06, ПН И ЧТ В 06:00) ===
-06 5 * * 5 root /usr/bin/systemctl reboot
-0 6 * * 1,4 root /usr/bin/systemctl reboot
-
-# === 6. МОНИТОРИНГ (СЛУЖБА X-UI, ЯДРО XRAY, ПОРТЫ 2053 И 8443) ===
-*/30 * * * * root /usr/local/sbin/xui-health.sh
-
-# === 7. ОБНОВЛЕНИЕ ГЕО-БАЗ V2FLY И RUNETFREEDOM (ПОНЕДЕЛЬНИК 05:00) ===
+# 5. Гео-базы v2fly / runetfreedom (понедельник 05:00)
 0 5 * * 1 root /usr/local/sbin/update-geo.sh
 
-# === 8. ОЧИСТКА СИСТЕМНЫХ ЖУРНАЛОВ JOURNALCTL (СУББОТА) ===
+# 6. Мониторинг healthcheck с анти-лупом (каждые 30 мин)
+*/30 * * * * root /usr/local/sbin/xui-health.sh
+
+# 7. Ротация журналов journalctl (суббота 04:15)
 15 4 * * 6 root /usr/bin/journalctl --vacuum-time=7d --vacuum-size=200M > /dev/null 2>&1
 EOF
 
@@ -1101,63 +913,248 @@ systemctl restart cron
 
 
 ###############################################################################
-# 26. ФИНАЛЬНАЯ ПРОВЕРКА СТАТУСОВ
+# 11. КОМПАКТНЫЙ ЭКСПЛУАТАЦИОННЫЙ MOTD
+###############################################################################
+
+echo ">>> Установка быстрого эксплуатационного MOTD..."
+
+# Генерация безопасного пароля MSSQL без хардкода
+if [[ ! -f "$MSSQL_SA_PASSWORD_FILE" ]]; then
+    ( umask 077; openssl rand -base64 24 > "$MSSQL_SA_PASSWORD_FILE" )
+    chmod 600 "$MSSQL_SA_PASSWORD_FILE"
+fi
+
+cat > /etc/update-motd.d/99-custom-sysinfo <<'EOF'
+#!/bin/bash
+
+# --- Цветовая палитра ---
+NONE='\033[0m'
+GREEN_B='\033[1;32m'
+CYAN='\033[0;36m'
+YELLOW='\033[1;33m'
+RED_B='\033[1;31m'
+PURPLE='\033[0;35m'
+
+# --- Uptime ---
+UPTIME=$(uptime -p 2>/dev/null | sed 's/up //' || uptime)
+
+# --- Сетевые соединения ---
+CONN_ESTAB=$(ss -tun -a 2>/dev/null | awk '/ESTAB/ {c++} END {print c+0}')
+CONN_TOTAL=$(ss -tun -a 2>/dev/null | awk 'NR>1 {c++} END {print c+0}')
+
+# --- Память ---
+MEM_TOTAL=$(free -m 2>/dev/null | awk '/Mem:/ {print $2}')
+MEM_USED=$(free -m 2>/dev/null | awk '/Mem:/ {print $3}')
+[ -n "$MEM_TOTAL" ] && [ "$MEM_TOTAL" -gt 0 ] && MEM_PCT=$((MEM_USED * 100 / MEM_TOTAL)) || MEM_PCT=0
+
+# --- Swap ---
+SWAP_TOTAL=$(free -m 2>/dev/null | awk '/Swap:/ {print $2}')
+SWAP_USED=$(free -m 2>/dev/null | awk '/Swap:/ {print $3}')
+[ -n "$SWAP_TOTAL" ] && [ "$SWAP_TOTAL" -gt 0 ] && SWAP_PCT=$((SWAP_USED * 100 / SWAP_TOTAL)) || SWAP_PCT=0
+
+# --- Диск ---
+DISK_TOTAL=$(df -h / 2>/dev/null | awk 'NR==2 {print $2}')
+DISK_USED=$(df -h / 2>/dev/null | awk 'NR==2 {print $3}')
+DISK_PCT=$(df -h / 2>/dev/null | awk 'NR==2 {print $5}' | tr -d '%')
+
+# --- IP с быстрым кэшированием ---
+IP_LOCAL=$(hostname -I 2>/dev/null | awk '{print $1}')
+IP_CACHE="/tmp/pub_ip_cache"
+
+update_pub_ip() {
+    local temp_ip
+    temp_ip=$(curl -s --connect-timeout 2 https://api.ipify.org 2>/dev/null)
+    if [[ "$temp_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "$temp_ip" > "$IP_CACHE"
+    fi
+}
+
+if [ ! -s "$IP_CACHE" ]; then
+    update_pub_ip
+elif [ $(find "$IP_CACHE" -mmin +60 2>/dev/null) ]; then
+    update_pub_ip &
+fi
+
+IP_PUB=$(cat "$IP_CACHE" 2>/dev/null || echo "Ожидание...")
+[[ "$IP_PUB" == *"<html"* ]] && IP_PUB="N/A"
+
+# --- SSH-сессии, Cron-задачи, APT ---
+SSH_CONN=$(ss -t 2>/dev/null | awk '/ssh/ {c++} END {print c+0}')
+CRON_COUNT=$(grep -cE '^[0-9*@]' /etc/cron.d/vps-maintenance 2>/dev/null || echo 0)
+UPDATES=$(apt list --upgradable 2>/dev/null | wc -l || echo 0)
+
+# --- Docker ---
+DOCKER_COUNT=$(docker ps -q 2>/dev/null | wc -l || echo 0)
+DOCKER_LIST=$(docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || true)
+
+# --- Статусы служб ---
+check_service() {
+    if systemctl is-active --quiet "$1" 2>/dev/null; then
+        echo -e "${GREEN_B}RUNNING${NONE}"
+    else
+        echo -e "${RED_B}STOPPED${NONE}"
+    fi
+}
+
+STATUS_XUI=$(check_service x-ui)
+STATUS_NGINX=$(check_service nginx)
+
+# WARP (локальная проверка сокета :40000)
+if ss -lnt 2>/dev/null | grep -qE ":40000[[:space:]]"; then
+    STATUS_WARP="${GREEN_B}RUNNING (SOCKS5 :40000)${NONE}"
+elif systemctl is-active --quiet warp-svc 2>/dev/null; then
+    STATUS_WARP="${YELLOW}CONNECTING (warp-svc)${NONE}"
+else
+    STATUS_WARP="${RED_B}STOPPED${NONE}"
+fi
+
+STATUS_POSTGRES=$(pg_isready >/dev/null 2>&1 && echo -e "${GREEN_B}RUNNING${NONE}" || echo -e "${RED_B}STOPPED${NONE}")
+STATUS_TORRSERVER=$(check_service torrserver)
+
+# Проверка MS SQL через безопасный файл пароля
+MSSQL_SA_PASSWORD_FILE="/root/.mssql-sa-password"
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -Eq "^mssql_server$"; then
+    if [[ -r "$MSSQL_SA_PASSWORD_FILE" ]]; then
+        MSSQL_SA_PASSWORD="$(<"$MSSQL_SA_PASSWORD_FILE")"
+        if docker exec mssql_server /opt/mssql-tools18/bin/sqlcmd -S localhost -U SA -P "$MSSQL_SA_PASSWORD" -C -Q "SELECT 1" >/dev/null 2>&1; then
+            STATUS_MSSQL="${GREEN_B}RUNNING${NONE}"
+        else
+            STATUS_MSSQL="${YELLOW}STARTING/ERROR${NONE}"
+        fi
+    else
+        STATUS_MSSQL="${YELLOW}PASSWORD FILE MISSING${NONE}"
+    fi
+else
+    STATUS_MSSQL="${RED_B}STOPPED${NONE}"
+fi
+
+# Проверка Amnezia VPN в Docker
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -Eq "^amnezia-"; then
+    STATUS_AMNEZIA="${GREEN_B}RUNNING (Docker)${NONE}"
+else
+    STATUS_AMNEZIA="${RED_B}STOPPED${NONE}"
+fi
+
+# --- Вывод ---
+echo -e "${CYAN}┌────────────────────────────────────────────────────────────────────────┐${NONE}"
+echo -e "  ${GREEN_B}СЕРВЕР ПОДКЛЮЧЕН СТАБИЛЬНО${NONE}"
+echo -e "  Uptime: $UPTIME"
+echo -e "${CYAN}├────────────────────────────────────────────────────────────────────────┤${NONE}"
+
+echo -e "  ${PURPLE}МЕТРИКИ СИСТЕМЫ:${NONE}"
+printf "    %-24s : %s (Pub: %s)\n" "IPv4 адреса" "$IP_LOCAL" "$IP_PUB"
+printf "    %-24s : %sMB / %sMB (%s%%)\n" "Оперативная память" "$MEM_USED" "$MEM_TOTAL" "$MEM_PCT"
+printf "    %-24s : %sMB / %sMB (%s%%)\n" "Swap" "$SWAP_USED" "$SWAP_TOTAL" "$SWAP_PCT"
+printf "    %-24s : %s / %s (%s%%)\n" "Диск (/)" "$DISK_USED" "$DISK_TOTAL" "$DISK_PCT"
+printf "    %-24s : %s (Всего: %s)\n" "Активные соединения" "$CONN_ESTAB" "$CONN_TOTAL"
+printf "    %-24s : %s\n" "SSH-сессии" "$SSH_CONN"
+printf "    %-24s : %s\n" "Задачи обслуживания" "$CRON_COUNT"
+printf "    %-24s : %s\n" "Обновления APT" "$UPDATES"
+
+echo -e "${CYAN}├────────────────────────────────────────────────────────────────────────┤${NONE}"
+echo -e "  ${PURPLE}СТАТУС СЛУЖБ:${NONE}"
+printf "    %-24s : %b\n" "3x-ui / Xray" "$STATUS_XUI"
+printf "    %-24s : %b\n" "Nginx" "$STATUS_NGINX"
+printf "    %-24s : %b\n" "Cloudflare WARP" "$STATUS_WARP"
+printf "    %-24s : %b\n" "PostgreSQL" "$STATUS_POSTGRES"
+printf "    %-24s : %b\n" "MS SQL Server" "$STATUS_MSSQL"
+printf "    %-24s : %b\n" "TorrServer" "$STATUS_TORRSERVER"
+printf "    %-24s : %b\n" "Amnezia VPN" "$STATUS_AMNEZIA"
+
+echo -e "${CYAN}├────────────────────────────────────────────────────────────────────────┤${NONE}"
+echo -e "  ${PURPLE}DOCKER:${NONE}"
+printf "    %-24s : %s\n" "Активные контейнеры" "$DOCKER_COUNT"
+if [[ -n "$DOCKER_LIST" ]]; then
+    echo "$DOCKER_LIST"
+else
+    echo -e "    ${YELLOW}Нет активных контейнеров${NONE}"
+fi
+
+echo -e "${CYAN}└────────────────────────────────────────────────────────────────────────┘${NONE}"
+echo
+EOF
+
+chmod +x /etc/update-motd.d/99-custom-sysinfo
+
+
+###############################################################################
+# 12. БЛОКИРУЮЩАЯ ФИНАЛЬНАЯ ПРОВЕРКА
 ###############################################################################
 
 echo
 echo "======================================================================"
-echo " ✅ ФИНАЛЬНАЯ ПРОВЕРКА"
+echo " ✅ ФИНАЛЬНАЯ ПРОВЕРКА СИСТЕМЫ"
 echo "======================================================================"
 
-check_service() {
-    local name="$1"
-    local svc="$2"
-    printf "%-22s : " "$name"
-    systemctl is-active --quiet "$svc" && echo "OK" || echo "FAIL"
+FAILED_CHECKS=0
+
+check_item() {
+    local label="$1"
+    local condition="$2"
+    local mandatory="${3:-1}"
+
+    printf "%-26s : " "$label"
+    if eval "$condition"; then
+        echo "OK"
+    else
+        if [[ "$mandatory" == "1" ]]; then
+            echo "FAIL"
+            FAILED_CHECKS=$((FAILED_CHECKS + 1))
+        else
+            echo "WARN (Опционально)"
+        fi
+    fi
 }
 
-check_service "Nginx" "nginx"
-check_service "SSH" "ssh"
-check_service "Cron" "cron"
-check_service "Cloudflare WARP" "warp-svc"
-check_service "x-ui service" "x-ui"
+check_item "Nginx" "systemctl is-active --quiet nginx" 1
+check_item "SSH (:1241)" "ss -lnt | grep -qE ':${SSH_PORT}[[:space:]]'" 1
+check_item "Cron" "systemctl is-active --quiet cron" 1
+check_item "3x-ui service" "systemctl is-active --quiet x-ui" 1
+check_item "Xray core process" "pgrep -af 'xray' >/dev/null 2>&1" 1
 
-printf "%-22s : " "Xray core"
-pgrep -af 'xray' >/dev/null 2>&1 && echo "OK" || echo "FAIL"
-
-for port in 2053 8443; do
-    printf "%-22s : " "Xray :${port}"
-    ss -lnt 2>/dev/null | grep -qE ":${port}[[:space:]]" && echo "OK" || echo "FAIL"
+for port in "${XRAY_PORTS[@]}"; do
+    check_item "Xray Port ${port}" "ss -lnt | grep -qE ':${port}[[:space:]]'" 1
 done
 
-printf "%-22s : " "WARP SOCKS5 :${WARP_PROXY_PORT}"
-ss -lnt 2>/dev/null | grep -qE ":${WARP_PROXY_PORT}[[:space:]]" && echo "OK" || echo "FAIL"
+if [[ "$INSTALL_WARP" == "1" ]]; then
+    check_item "WARP SOCKS5 (:40000)" "ss -lnt | grep -qE ':${WARP_PROXY_PORT}[[:space:]]'" "$WARP_MANDATORY"
+fi
 
-printf "%-22s : " "UFW Firewall"
-ufw status | grep -q "Status: active" && echo "OK" || echo "FAIL"
+check_item "UFW Firewall" "ufw status | grep -q 'Status: active'" 1
 
-printf "%-22s : " "IPv6 Disabled"
-[[ "$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)" == "1" ]] && echo "OK" || echo "FAIL"
+if [[ "$DISABLE_IPV6" == "1" ]]; then
+    check_item "IPv6 Disabled" "[[ \"\$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)\" == \"1\" ]]" 1
+fi
 
+echo
 
-###############################################################################
-# 27. ИТОГОВАЯ ИНФОРМАЦИЯ
-###############################################################################
+# Блокировка создания маркера при наличии сбоев
+if [[ "$FAILED_CHECKS" -gt 0 ]]; then
+    echo "======================================================================"
+    echo " ❌ РАЗВЕРТЫВАНИЕ НЕ ЗАВЕРШЕНО: Ошибок обязательных служб: ${FAILED_CHECKS}"
+    echo " Маркер '${BOOTSTRAP_MARKER}' НЕ был создан."
+    echo " Подробности смотрите в лог-файле: ${LOG_FILE}"
+    echo "======================================================================"
+    echo
+    exit 1
+fi
+
+# Фиксация успешного завершения только при всех зелёных тестах
+touch "$BOOTSTRAP_MARKER"
 
 SERVER_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')"
 
-echo
 echo "======================================================================"
-echo " ☁️ VPS ГОТОВ"
+echo " ☁️ VPS УСПЕШНО НАСТРОЕН И ПРОВЕРЕН"
 echo "======================================================================"
 echo "IP VPS           : ${SERVER_IP:-unknown}"
-echo "SSH              : ${SSH_PORT}"
-echo "X-UI             : ${XUI_PORT}"
-echo "Cloudflare WARP  : SOCKS5 127.0.0.1:${WARP_PROXY_PORT}"
-echo "IPv6             : Отключен"
-echo "Xray Inbounds    : 2053, 8443"
+echo "SSH Порт         : ${SSH_PORT}"
+echo "Панель 3x-ui     : ${XUI_PORT}"
+echo "Xray Inbounds    : ${XRAY_PORTS[*]}"
+echo "WARP SOCKS5      : 127.0.0.1:${WARP_PROXY_PORT}"
+echo "IPv6             : $( [[ "$DISABLE_IPV6" == "1" ]] && echo "Отключен" || echo "Включен" )"
+echo "BBR              : $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "default")"
 echo "======================================================================"
-echo " ✅ Установка завершена"
-echo " $(date '+%Y-%m-%d %H:%M:%S')"
+echo " ✅ Завершено успешно: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "======================================================================"
 echo
