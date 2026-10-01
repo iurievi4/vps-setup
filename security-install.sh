@@ -283,30 +283,16 @@ bantime = 1h
 findtime = 10m
 maxretry = 5
 
-EOF
-
-# recidive добавляем только если отдельная конфигурация уже не определяет его.
-if ! grep -RqsE '^[[:space:]]*\[recidive\][[:space:]]*$' \
-    /etc/fail2ban/jail.local \
-    /etc/fail2ban/jail.d/*.conf \
-    /etc/fail2ban/jail.d/*.local 2>/dev/null; then
-
-    cat >> "$FAIL2BAN_JAIL" <<'EOF'
 
 [recidive]
 enabled = true
 bantime = 1w
 findtime = 1d
 maxretry = 5
-banaction = iptables-multiport
+banaction = nftables[type=allports]
 logpath = /var/log/fail2ban.log
 
 EOF
-
-    log "Jail recidive добавлен"
-else
-    log "Jail recidive уже существует — существующая конфигурация сохранена"
-fi
 
 ok "Конфигурация Fail2ban записана: ${FAIL2BAN_JAIL}"
 
