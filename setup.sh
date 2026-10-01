@@ -480,34 +480,42 @@ echo "✓ SSH успешно работает на порту ${SSH_PORT} (UFW �
 
 echo ">>> Настройка Fail2ban..."
 
-cat > /etc/fail2ban/jail.local <<EOF_F2B
-[DEFAULT]
-bantime = 1h
-findtime = 10m
-maxretry = 5
-ignoreip = 127.0.0.1/8 ::1
+F2B_CONF="/etc/fail2ban/jail.d/vps-setup.local"
+
+cat > "$F2B_CONF" <<EOF_F2B
+# =====================================================================
+# Managed by setup.sh
+#
+# SSH protection and recidive.
+# Existing /etc/fail2ban/jail.local is preserved.
+# Existing jail.d/*.local configurations are preserved.
+# =====================================================================
 
 [sshd]
 enabled = true
 port = ${SSH_PORT}
-filter = sshd
 backend = systemd
-maxretry = 3
+bantime = 1h
 findtime = 10m
-bantime = 24h
+maxretry = 5
+
 
 [recidive]
 enabled = true
-logpath = /var/log/fail2ban.log
-banaction = %(banaction_allports)s
 bantime = 1w
 findtime = 1d
-maxretry = 3
+maxretry = 5
+banaction = nftables[type=allports]
+logpath = /var/log/fail2ban.log
 EOF_F2B
 
-chmod 644 /etc/fail2ban/jail.local
+chmod 644 "$F2B_CONF"
+
+fail2ban-client -t
+
 systemctl enable --now fail2ban
 systemctl restart fail2ban
+
 sleep 2
 
 if ! fail2ban-client status sshd >/dev/null 2>&1; then
