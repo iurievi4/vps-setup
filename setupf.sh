@@ -1423,7 +1423,13 @@ STATUS_NGINX=$(check_service nginx)
 
 # Fail2ban
 if systemctl is-active --quiet fail2ban 2>/dev/null; then
-    STATUS_FAIL2BAN="${GREEN_B}RUNNING${NONE}"
+    F2B_BANNED=$(fail2ban-client status sshd 2>/dev/null \
+        | awk -F': ' '/Currently banned/ {print $2}' \
+        | tr -d '[:space:]')
+
+    F2B_BANNED=${F2B_BANNED:-0}
+
+    STATUS_FAIL2BAN="${GREEN_B}RUNNING${NONE} | banned: ${F2B_BANNED}"
 else
     STATUS_FAIL2BAN="${RED_B}STOPPED${NONE}"
 fi
