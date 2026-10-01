@@ -1335,42 +1335,7 @@ if [[ "$INSTALL_MSSQL" == "1" && ! -f "$MSSQL_SA_PASSWORD_FILE" ]]; then
     chmod 600 "$MSSQL_SA_PASSWORD_FILE"
 fi
 
-cat > /etc/update-motd.d/98-security-status <<'EOF_SECURITY_MOTD'
-#!/usr/bin/env bash
 
-GREEN='\033[1;32m'
-RED='\033[1;31m'
-NONE='\033[0m'
-
-if systemctl is-active --quiet fail2ban 2>/dev/null; then
-    F2B_STATUS="${GREEN}OK${NONE}"
-else
-    F2B_STATUS="${RED}FAIL${NONE}"
-fi
-
-if systemctl is-active --quiet fail2ban 2>/dev/null && fail2ban-client status sshd >/dev/null 2>&1; then
-    F2B_BANNED="$(fail2ban-client status sshd 2>/dev/null | awk -F: '/Currently banned:/ {gsub(/^[[:space:]]+/, "", $2); print $2; exit}')"
-    F2B_BANNED="${F2B_BANNED:-0}"
-    F2B_JAIL="${GREEN}OK | banned: ${F2B_BANNED}${NONE}"
-else
-    F2B_JAIL="${RED}FAIL${NONE}"
-fi
-
-if systemctl is-active --quiet antiscan.service 2>/dev/null && ipset list SCANNERS-BLOCK-V4 >/dev/null 2>&1 && iptables -C INPUT -m set --match-set SCANNERS-BLOCK-V4 src -j DROP >/dev/null 2>&1; then
-    SCANNER_COUNT="$(ipset list SCANNERS-BLOCK-V4 2>/dev/null | awk '/Number of entries:/ {print $4; exit}')"
-    SCANNER_COUNT="${SCANNER_COUNT:-0}"
-    ANTISCAN_STATUS="${GREEN}OK | networks: ${SCANNER_COUNT}${NONE}"
-else
-    ANTISCAN_STATUS="${RED}FAIL${NONE}"
-fi
-
-printf '\n'
-echo -e "  \033[0;36m🛡️ SECURITY${NONE}"
-printf "    %-22s : %b\n" "Fail2ban" "$F2B_STATUS"
-printf "    %-22s : %b\n" "SSH jail" "$F2B_JAIL"
-printf "    %-22s : %b\n" "AntiScanner" "$ANTISCAN_STATUS"
-EOF_SECURITY_MOTD
-chmod +x /etc/update-motd.d/98-security-status
 
 cat > /etc/update-motd.d/99-custom-sysinfo <<'EOF'
 #!/bin/bash
@@ -1456,6 +1421,42 @@ check_service() {
 STATUS_XUI=$(check_service x-ui)
 STATUS_NGINX=$(check_service nginx)
 
+# Fail2ban
+if systemctl is-active --quiet fail2ban 2>/dev/null; then
+    STATUS_FAIL2BAN="${GREEN_B}RUNNING${NONE}"
+else
+    STATUS_FAIL2BAN="${RED_B}STOPPED${NONE}"
+fi
+
+# Fail2ban SSH jail
+if systemctl is-active --quiet fail2ban 2>/dev/null && \
+   fail2ban-client status sshd >/dev/null 2>&1; then
+    F2B_BANNED="$(fail2ban-client status sshd 2>/dev/null | \
+        awk -F: '/Currently banned:/ {
+            gsub(/^[[:space:]]+/, "", $2)
+            print $2
+            exit
+        }')"
+    F2B_BANNED="${F2B_BANNED:-0}"
+    STATUS_SSH_JAIL="${GREEN_B}OK | banned: ${F2B_BANNED}${NONE}"
+else
+    STATUS_SSH_JAIL="${RED_B}FAIL${NONE}"
+fi
+
+# AntiScanner
+if systemctl is-active --quiet antiscan.service 2>/dev/null && \
+   ipset list SCANNERS-BLOCK-V4 >/dev/null 2>&1 && \
+   iptables -C INPUT -m set --match-set SCANNERS-BLOCK-V4 src -j DROP >/dev/null 2>&1; then
+
+    SCANNER_COUNT="$(ipset list SCANNERS-BLOCK-V4 2>/dev/null | \
+        awk '/Number of entries:/ {print $4; exit}')"
+
+    SCANNER_COUNT="${SCANNER_COUNT:-0}"
+    STATUS_ANTISCAN="${GREEN_B}RUNNING | networks: ${SCANNER_COUNT}${NONE}"
+else
+    STATUS_ANTISCAN="${RED_B}STOPPED${NONE}"
+fi
+
 # WARP (только локальная проверка)
 if ss -lnt 2>/dev/null | grep -qE ":${WARP_PROXY_PORT}[[:space:]]"; then
     STATUS_WARP="${GREEN_B}RUNNING (SOCKS5 :${WARP_PROXY_PORT})${NONE}"
@@ -1522,6 +1523,8 @@ printf "    %-22s : %s\n" "Обновления APT" "$UPDATES"
 
 echo -e "${CYAN}├────────────────────────────────────────────────────────────────────────┤${NONE}"
 echo -e "  ${PURPLE}СТАТУС СЛУЖБ:${NONE}"
+printf "    %-22s : %b\n" "AntiScanner" "$STATUS_ANTISCAN"
+printf "    %-22s : %b\n" "PostgreSQL" "$STATUS_POSTGRES"
 printf "    %-22s : %b\n" "3x-ui / Xray" "$STATUS_XUI"
 printf "    %-22s : %b\n" "Nginx" "$STATUS_NGINX"
 printf "    %-22s : %b\n" "Cloudflare WARP" "$STATUS_WARP"
