@@ -1429,7 +1429,7 @@ if systemctl is-active --quiet fail2ban 2>/dev/null; then
 
     F2B_BANNED=${F2B_BANNED:-0}
 
-    STATUS_FAIL2BAN="${GREEN_B}RUNNING${NONE} | banned: ${F2B_BANNED}"
+    STATUS_FAIL2BAN="${GREEN_B}RUNNING | banned: ${F2B_BANNED}${NONE}"
 else
     STATUS_FAIL2BAN="${RED_B}STOPPED${NONE}"
 fi
