@@ -178,59 +178,69 @@ command -v fail2ban-client >/dev/null 2>&1 \
 
 detect_ssh_port() {
     local detected_port=""
+    local sshd_cmd=""
 
-    # 1. Из текущей активной SSH-сессии ($SSH_CONNECTION)
-    if [[ -n "${SSH_CONNECTION:-}" ]]; then
+    # 1. Основной источник — эффективная конфигурация sshd.
+    # Именно sshd -T показывает фактический порт SSH.
+    if command -v sshd >/dev/null 2>&1; then
+        sshd_cmd="sshd"
+    elif [[ -x /usr/sbin/sshd ]]; then
+        sshd_cmd="/usr/sbin/sshd"
+    fi
+
+    if [[ -n "$sshd_cmd" ]]; then
+        detected_port="$(
+            "$sshd_cmd" -T 2>/dev/null \
+            | awk '$1=="port" {print $2; exit}' \
+            || true
+        )"
+    fi
+
+    # 2. Если sshd -T не дал результат — используем
+    # текущую SSH-сессию.
+    if [[ -z "$detected_port" && -n "${SSH_CONNECTION:-}" ]]; then
         local p
         p="$(awk '{print $4}' <<< "$SSH_CONNECTION" 2>/dev/null || true)"
+
         if [[ "$p" =~ ^[0-9]+$ && "$p" -gt 0 && "$p" -le 65535 ]]; then
             detected_port="$p"
         fi
     fi
 
-    # 2. Из активных слушающих сокетов через ss (sshd или systemd ssh.socket)
-    if [[ -z "$detected_port" ]] && command -v ss >/dev/null 2>&1; then
+    # 3. Если sshd -T и SSH_CONNECTION не дали результат —
+    # проверяем ssh.socket.
+    if [[ -z "$detected_port" ]] && command -v systemctl >/dev/null 2>&1; then
         detected_port="$(
-            ss -tlnp 2>/dev/null \
-            | awk '
-                /(sshd|ssh\.socket)/ {
-                    n = split($4, a, ":")
-                    p = a[n]
-                    gsub(/[^0-9]/, "", p)
-                    if (p != "") { print p; exit }
+            systemctl cat ssh.socket 2>/dev/null \
+            | awk -F'=' '
+                /^[[:space:]]*ListenStream=[0-9]+/ {
+                    print $2
+                    exit
                 }
             ' || true
         )"
     fi
 
-    # 3. Из systemd ssh.socket (актуально для Ubuntu 22.10, 24.04+)
-    if [[ -z "$detected_port" ]] && command -v systemctl >/dev/null 2>&1; then
+    # 4. Проверяем реально слушающий sshd.
+    if [[ -z "$detected_port" ]] && command -v ss >/dev/null 2>&1; then
         detected_port="$(
-            systemctl cat ssh.socket 2>/dev/null \
-            | awk -F'=' '/^[[:space:]]*ListenStream=[0-9]+/ {print $2; exit}' \
-            || true
+            ss -tlnp 2>/dev/null \
+            | awk '
+                /sshd/ {
+                    n = split($4, a, ":")
+                    p = a[n]
+                    gsub(/[^0-9]/, "", p)
+
+                    if (p != "") {
+                        print p
+                        exit
+                    }
+                }
+            ' || true
         )"
     fi
 
-    # 4. Из sshd -T (проверяем команду sshd и прямой путь /usr/sbin/sshd)
-    if [[ -z "$detected_port" ]]; then
-        local sshd_cmd=""
-        if command -v sshd >/dev/null 2>&1; then
-            sshd_cmd="sshd"
-        elif [[ -x /usr/sbin/sshd ]]; then
-            sshd_cmd="/usr/sbin/sshd"
-        fi
-
-        if [[ -n "$sshd_cmd" ]]; then
-            detected_port="$(
-                "$sshd_cmd" -T 2>/dev/null \
-                | awk '$1=="port" {print $2; exit}' \
-                || true
-            )"
-        fi
-    fi
-
-    # 5. Из конфигурационных файлов sshd_config и sshd_config.d/*.conf
+    # 5. Последний вариант — конфигурационные файлы.
     if [[ -z "$detected_port" ]]; then
         detected_port="$(
             awk '
@@ -238,13 +248,14 @@ detect_ssh_port() {
                     print $2
                     exit
                 }
-            ' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null || true
+            ' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null \
+            || true
         )"
     fi
 
-    echo "${detected_port:-22}"
+    # 6. Для твоего VPS fallback — 1241.
+    echo "${detected_port:-1241}"
 }
-
 SSH_PORT="$(detect_ssh_port)"
 
 ok "SSH порт определён автоматически: ${SSH_PORT}"
