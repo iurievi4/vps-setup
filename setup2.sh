@@ -2,7 +2,7 @@
 
 ###############################################################################
 # ☁️ VPS BOOTSTRAP / SETUP
-# Версия: 3.9.4 (Production-Ready)
+# Версия: 3.9.7-secure (setup2 base + security)
 #
 # Поддерживаемые ОС: Ubuntu / Debian (amd64, arm64)
 #
@@ -15,22 +15,25 @@
 #   6. Cloudflare WARP (SOCKS5 127.0.0.1:40000)
 #   7. Веб-сервер Nginx (:80)
 #   8. Панель 3x-ui + опциональный накат базы
-#   9. Службы обслуживания:
+#   9. Проверка безопасности после завершения установки 3x-ui:
+#      - Fail2ban (не конфликтует с конфигурацией 3x-ui)
+#      - AntiScanner / ipset
+#   10. Службы обслуживания:
 #      - xui-backup.sh (с верификацией tar -tzf)
 #      - xui-update-safe.sh (безопасный откат через .bak и maintenance lock)
 #      - xui-health.sh (защита от restart-loop: макс. 3 перезапуска в час)
 #      - system-update.sh (умный reboot только по /var/run/reboot-required)
 #      - update-geo.sh, renew-ssl.sh
-#  10. Системный планировщик /etc/cron.d/vps-maintenance
-#  11. Быстрый и информативный MOTD (без лишней задержки, пароль MSSQL в файле)
-#  12. Финальная проверка работоспособности
-#  13. Создание маркера завершения
+#  11. Системный планировщик /etc/cron.d/vps-maintenance
+#  12. Быстрый и информативный MOTD (без лишней задержки, пароль MSSQL в файле)
+#  13. Финальная проверка работоспособности
+#  14. Создание маркера завершения
 ###############################################################################
 
 set -Eeuo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
-SCRIPT_VERSION="3.9.6"
+SCRIPT_VERSION="3.9.7-secure"
 BOOTSTRAP_MARKER="/etc/vps-bootstrap-complete"
 LOG_FILE="/var/log/vps-setup.log"
 
@@ -227,7 +230,7 @@ apt-get upgrade -y
 apt-get install -y \
     nginx git curl wget gnupg cron iproute2 iputils-ping \
     iptables ufw socat sqlite3 ca-certificates openssl jq \
-    unzip lsof procps net-tools util-linux fail2ban
+    unzip lsof procps net-tools util-linux
 
 systemctl enable --now cron
 
@@ -466,51 +469,6 @@ if [[ "$EFFECTIVE_SSH_PORT" != "$SSH_PORT" ]]; then
     exit 1
 fi
 echo "✓ SSH успешно работает на порту ${SSH_PORT} (UFW предварительно открыт)."
-
-
-###############################################################################
-# 5.1. FAIL2BAN
-###############################################################################
-
-echo ">>> Настройка Fail2ban..."
-
-cat > /etc/fail2ban/jail.local <<EOF_F2B
-[DEFAULT]
-bantime = 1h
-findtime = 10m
-maxretry = 5
-ignoreip = 127.0.0.1/8 ::1
-
-[sshd]
-enabled = true
-port = ${SSH_PORT}
-filter = sshd
-backend = systemd
-maxretry = 3
-findtime = 10m
-bantime = 24h
-
-[recidive]
-enabled = true
-logpath = /var/log/fail2ban.log
-banaction = %(banaction_allports)s
-bantime = 1w
-findtime = 1d
-maxretry = 3
-EOF_F2B
-
-chmod 644 /etc/fail2ban/jail.local
-systemctl enable --now fail2ban
-systemctl restart fail2ban
-sleep 2
-
-if ! fail2ban-client status sshd >/dev/null 2>&1; then
-    echo "❌ Fail2ban jail sshd не запустился."
-    fail2ban-client status || true
-    exit 1
-fi
-
-echo "✓ Fail2ban активирован: SSH :${SSH_PORT}, recidive."
 
 
 ###############################################################################
@@ -1125,10 +1083,246 @@ systemctl enable nginx
 nginx -t
 systemctl start nginx
 trap - EXIT
+###############################################################################
+###############################################################################
+# 9.6. SECURITY: FAIL2BAN + ANTISCANNER
+###############################################################################
+
+echo
+echo "======================================================================"
+echo " 🛡️ SECURITY: FAIL2BAN + ANTISCANNER"
+echo "======================================================================"
+
+###############################################################################
+# 9.6.1. FAIL2BAN
+###############################################################################
+
+echo ">>> Проверка Fail2ban после установки 3x-ui..."
+
+# 3x-ui обычно устанавливает Fail2ban самостоятельно.
+# Если он уже есть — не переустанавливаем и не перезаписываем его jail.
+if command -v fail2ban-client >/dev/null 2>&1; then
+    F2B_VER="$(fail2ban-client version 2>/dev/null || true)"
+    echo "✓ Fail2ban уже установлен${F2B_VER:+: $F2B_VER}"
+else
+    echo "⚠️ Fail2ban не найден — устанавливаем..."
+    apt-get install -y fail2ban
+    command -v fail2ban-client >/dev/null 2>&1 || {
+        echo "❌ Fail2ban не установился."
+        exit 1
+    }
+    echo "✓ Fail2ban установлен."
+fi
+
+mkdir -p /etc/fail2ban/jail.d
+
+# Сначала запускаем уже установленный Fail2ban, не меняя его конфигурацию.
+systemctl enable --now fail2ban
+
+# Проверяем уже существующий sshd jail. Если он создан 3x-ui — оставляем как есть.
+F2B_SSHD_EXISTS=0
+if fail2ban-client status sshd >/dev/null 2>&1; then
+    F2B_SSHD_EXISTS=1
+    echo "✓ Fail2ban SSH jail уже настроен — существующую конфигурацию не меняем."
+fi
+
+if [[ "$F2B_SSHD_EXISTS" -eq 0 ]]; then
+    F2B_SSHD_CONF="/etc/fail2ban/jail.d/vps-setup-sshd.local"
+    if [[ ! -f "$F2B_SSHD_CONF" ]]; then
+        cat > "$F2B_SSHD_CONF" <<EOF_F2B_SSHD
+# Managed by VPS Bootstrap. Created only when 3x-ui/Fail2ban has no sshd jail.
+[sshd]
+enabled = true
+port = ${SSH_PORT}
+filter = sshd
+backend = systemd
+maxretry = 3
+findtime = 10m
+bantime = 24h
+EOF_F2B_SSHD
+        chmod 644 "$F2B_SSHD_CONF"
+        echo "✓ Добавлен отсутствующий SSH jail для порта ${SSH_PORT}."
+    fi
+fi
+
+# Recidive тоже добавляем только если его ещё нет.
+F2B_RECIDIVE_EXISTS=0
+if fail2ban-client status recidive >/dev/null 2>&1; then
+    F2B_RECIDIVE_EXISTS=1
+    echo "✓ Fail2ban recidive уже настроен — существующую конфигурацию не меняем."
+fi
+
+if [[ "$F2B_RECIDIVE_EXISTS" -eq 0 ]]; then
+    F2B_RECIDIVE_CONF="/etc/fail2ban/jail.d/vps-setup-recidive.local"
+    if [[ ! -f "$F2B_RECIDIVE_CONF" ]]; then
+        cat > "$F2B_RECIDIVE_CONF" <<'EOF_F2B_RECIDIVE'
+# Managed by VPS Bootstrap. Created only when recidive jail is absent.
+[recidive]
+enabled = true
+logpath = /var/log/fail2ban.log
+banaction = %(banaction_allports)s
+bantime = 1w
+findtime = 1d
+maxretry = 3
+EOF_F2B_RECIDIVE
+        chmod 644 "$F2B_RECIDIVE_CONF"
+        echo "✓ Добавлен отсутствующий recidive jail."
+    fi
+fi
+
+# Проверяем конфигурацию до перезапуска. При ошибке ничего существующего не удаляем.
+if ! fail2ban-client -t >/tmp/fail2ban-config-test.txt 2>&1; then
+    cat /tmp/fail2ban-config-test.txt >&2
+    echo "❌ Конфигурация Fail2ban некорректна."
+    exit 1
+fi
+
+systemctl restart fail2ban
+sleep 2
+
+if ! systemctl is-active --quiet fail2ban; then
+    echo "❌ Служба Fail2ban не запустилась."
+    exit 1
+fi
+
+if fail2ban-client status sshd >/dev/null 2>&1; then
+    echo "✓ Fail2ban SSH jail: OK"
+else
+    echo "⚠️ Fail2ban запущен, но SSH jail не активен."
+fi
+
+# 9.6.2. ANTISCANNER
+###############################################################################
+
+ANTISCAN_URL="https://gist.githubusercontent.com/sngvy/07cee7ac810c9d222fbddff8c1d1b8/raw/974d3d87f190468e134e9b56f1e0a93c7caa0fcd/blacklist.txt"
+ANTISCAN_SET="SCANNERS-BLOCK-V4"
+ANTISCAN_SCRIPT="/usr/local/sbin/antiscan-update.sh"
+ANTISCAN_LOG="/var/log/antiscan-update.log"
+ANTISCAN_ENV="/etc/default/antiscan"
+
+echo
+echo ">>> Установка и настройка AntiScanner..."
+
+apt-get install -y curl ipset iptables
+
+cat > "$ANTISCAN_ENV" <<EOF_ANTISCAN_CONF
+ANTISCAN_URL="${ANTISCAN_URL}"
+ANTISCAN_SET="${ANTISCAN_SET}"
+ANTISCAN_LOG="${ANTISCAN_LOG}"
+EOF_ANTISCAN_CONF
+chmod 600 "$ANTISCAN_ENV"
+
+cat > "$ANTISCAN_SCRIPT" <<'EOF_ANTISCAN'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+source /etc/default/antiscan
+URL="$ANTISCAN_URL"
+SET_NAME="$ANTISCAN_SET"
+TMP_FILE="/run/antiscan-blacklist.txt"
+LOG="$ANTISCAN_LOG"
+
+mkdir -p "$(dirname "$LOG")"
+exec >> "$LOG" 2>&1
+
+log() { echo "[$(date '+%F %T')] $*"; }
+
+command -v ipset >/dev/null 2>&1 || { log "ERROR: ipset not found"; exit 1; }
+command -v curl >/dev/null 2>&1 || { log "ERROR: curl not found"; exit 1; }
+command -v iptables >/dev/null 2>&1 || { log "ERROR: iptables not found"; exit 1; }
+
+if ! curl -fsSL --retry 3 --connect-timeout 10 --max-time 60 \
+    -o "${TMP_FILE}.new" "$URL"; then
+    rm -f "${TMP_FILE}.new"
+    log "ERROR: failed to download blacklist"
+    exit 1
+fi
+
+if ! grep -Eq '^[[:space:]]*[0-9]{1,3}(\.[0-9]{1,3}){3}(/[0-9]{1,2})?[[:space:]]*$' \
+    "${TMP_FILE}.new"; then
+    rm -f "${TMP_FILE}.new"
+    log "ERROR: downloaded blacklist contains no valid IPv4 networks"
+    exit 1
+fi
+
+mv -f "${TMP_FILE}.new" "$TMP_FILE"
+
+TMP_SET="${SET_NAME}-TMP"
+ipset destroy "$TMP_SET" 2>/dev/null || true
+ipset create "$TMP_SET" hash:net family inet hashsize 4096 maxelem 65536
+
+valid=0
+while IFS= read -r subnet; do
+    subnet="${subnet%%$'\r'}"
+    [[ -z "$subnet" || "$subnet" =~ ^[[:space:]]*# ]] && continue
+    if ipset add "$TMP_SET" "$subnet" -exist 2>/dev/null; then
+        valid=$((valid + 1))
+    fi
+done < "$TMP_FILE"
+
+if [[ "$valid" -eq 0 ]]; then
+    ipset destroy "$TMP_SET" 2>/dev/null || true
+    log "ERROR: no valid IPv4 networks loaded"
+    exit 1
+fi
+
+if ipset list "$SET_NAME" >/dev/null 2>&1; then
+    ipset swap "$TMP_SET" "$SET_NAME"
+    ipset destroy "$TMP_SET" 2>/dev/null || true
+else
+    ipset rename "$TMP_SET" "$SET_NAME"
+fi
+
+if ! iptables -C INPUT -m set --match-set "$SET_NAME" src -j DROP 2>/dev/null; then
+    iptables -I INPUT 1 -m set --match-set "$SET_NAME" src -j DROP
+fi
+
+count="$(ipset list "$SET_NAME" -o save 2>/dev/null | grep -c '^add ' || true)"
+log "OK: loaded ${valid} networks; ipset entries=${count}"
+EOF_ANTISCAN
+
+chmod 700 "$ANTISCAN_SCRIPT"
+
+cat > /etc/systemd/system/antiscan.service <<EOF_ANTISCAN_SERVICE
+[Unit]
+Description=AntiScanner IP blacklist
+After=network-online.target ufw.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${ANTISCAN_SCRIPT}
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF_ANTISCAN_SERVICE
+
+systemctl daemon-reload
+if systemctl enable --now antiscan.service; then
+    sleep 1
+else
+    echo "⚠️ AntiScanner не смог выполнить первичную загрузку списка. Установка продолжается; повтор будет по расписанию."
+fi
+
+if ipset list "$ANTISCAN_SET" >/dev/null 2>&1 && \
+   iptables -C INPUT -m set --match-set "$ANTISCAN_SET" src -j DROP >/dev/null 2>&1; then
+    echo "✓ AntiScanner: OK"
+else
+    echo "⚠️ AntiScanner не активирован на первом запуске. Это не блокирует установку VPS; обновление повторится по cron."
+fi
+
+###############################################################################
+# 9.6.3. MOTD/CRON HOOK
+###############################################################################
+
+# Ежедневное обновление AntiScanner уже находится в vps-maintenance.
+# Здесь ничего дополнительно не создаём, чтобы не плодить cron-файлы.
+
 
 
 ###############################################################################
-# 10. CRON ПЛАНИРОВЩИК (/etc/cron.d/vps-maintenance)
+# 11. CRON ПЛАНИРОВЩИК (/etc/cron.d/vps-maintenance)
 ###############################################################################
 
 echo ">>> Настройка расписания обслуживания..."
@@ -1152,6 +1346,9 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # 5. Гео-базы v2fly / runetfreedom (понедельник 05:00)
 0 5 * * 1 root /usr/local/sbin/update-geo.sh
 
+# 5.1. Обновление AntiScanner (ежедневно 05:30)
+30 5 * * * root /usr/local/sbin/antiscan-update.sh
+
 # 6. Мониторинг healthcheck с анти-лупом (каждые 30 мин)
 */30 * * * * root /usr/local/sbin/xui-health.sh
 
@@ -1163,8 +1360,7 @@ chmod 644 "$MAINTENANCE_FILE"
 systemctl restart cron
 
 
-###############################################################################
-# 11. ЛЁГКИЙ, БЫСТРЫЙ И БЕЗОПАСНЫЙ MOTD
+# 12. ЛЁГКИЙ, БЫСТРЫЙ И БЕЗОПАСНЫЙ MOTD
 ###############################################################################
 
 echo ">>> Установка быстрого эксплуатационного MOTD..."
@@ -1348,7 +1544,25 @@ printf "    %-22s : %s\n" "Обновления APT" "$UPDATES"
 echo -e "${CYAN}├────────────────────────────────────────────────────────────────────────┤${NONE}"
 echo -e "  ${PURPLE}СТАТУС СЛУЖБ:${NONE}"
 STATUS_FAIL2BAN=$(check_service fail2ban)
+if systemctl is-active --quiet fail2ban 2>/dev/null && fail2ban-client status sshd >/dev/null 2>&1; then
+    F2B_JAIL_BANNED="$(fail2ban-client status sshd 2>/dev/null | awk -F: '/Currently banned:/ {gsub(/^[[:space:]]+/, "", $2); print $2; exit}')"
+    F2B_JAIL_BANNED="${F2B_JAIL_BANNED:-0}"
+    STATUS_FAIL2BAN_JAIL="${GREEN_B}ACTIVE (banned: ${F2B_JAIL_BANNED})${NONE}"
+else
+    STATUS_FAIL2BAN_JAIL="${RED_B}INACTIVE${NONE}"
+fi
+if systemctl is-active --quiet antiscan.service 2>/dev/null \
+    && ipset list SCANNERS-BLOCK-V4 >/dev/null 2>&1 \
+    && iptables -C INPUT -m set --match-set SCANNERS-BLOCK-V4 src -j DROP >/dev/null 2>&1; then
+    SCANNER_COUNT="$(ipset list SCANNERS-BLOCK-V4 2>/dev/null | awk '/Number of entries:/ {print $4; exit}')"
+    SCANNER_COUNT="${SCANNER_COUNT:-0}"
+    STATUS_ANTISCAN="${GREEN_B}RUNNING (${SCANNER_COUNT} nets)${NONE}"
+else
+    STATUS_ANTISCAN="${RED_B}STOPPED${NONE}"
+fi
 printf "    %-22s : %b\n" "Fail2ban" "$STATUS_FAIL2BAN"
+printf "    %-22s : %b\n" "Fail2ban SSH jail" "$STATUS_FAIL2BAN_JAIL"
+printf "    %-22s : %b\n" "AntiScanner" "$STATUS_ANTISCAN"
 printf "    %-22s : %b\n" "3x-ui / Xray" "$STATUS_XUI"
 printf "    %-22s : %b\n" "Nginx" "$STATUS_NGINX"
 printf "    %-22s : %b\n" "Cloudflare WARP" "$STATUS_WARP"
@@ -1374,7 +1588,7 @@ chmod +x /etc/update-motd.d/99-custom-sysinfo
 
 
 ###############################################################################
-# 12. ФИНАЛЬНАЯ ПРОВЕРКА И МАРКЕР ЗАВЕРШЕНИЯ
+# 13. ФИНАЛЬНАЯ ПРОВЕРКА И МАРКЕР ЗАВЕРШЕНИЯ
 ###############################################################################
 
 echo
@@ -1403,6 +1617,13 @@ check_item "SSH (:${SSH_PORT})" "ss -lnt | grep -qE ':${SSH_PORT}[[:space:]]'"
 check_item "Cron" "systemctl is-active --quiet cron"
 check_item "Fail2ban" "systemctl is-active --quiet fail2ban"
 check_item "Fail2ban SSH jail" "fail2ban-client status sshd >/dev/null 2>&1"
+# AntiScanner — дополнительный слой. Его временный сбой не должен отменять успешную установку VPS.
+printf "%-24s : " "AntiScanner service"
+if systemctl is-active --quiet antiscan.service; then echo "OK"; else echo "WARN"; fi
+printf "%-24s : " "AntiScanner ipset"
+if ipset list SCANNERS-BLOCK-V4 >/dev/null 2>&1; then echo "OK"; else echo "WARN"; fi
+printf "%-24s : " "AntiScanner rule"
+if iptables -C INPUT -m set --match-set SCANNERS-BLOCK-V4 src -j DROP >/dev/null 2>&1; then echo "OK"; else echo "WARN"; fi
 check_item "3x-ui service" "systemctl is-active --quiet x-ui"
 check_item "Xray core process" "pgrep -af 'xray' >/dev/null 2>&1"
 
