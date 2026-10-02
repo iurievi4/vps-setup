@@ -966,15 +966,59 @@ restore_custom_database() {
                 mkdir -p "${tmp_dir}/extract"
                 if tar -xzf "$decrypted_archive" -C "${tmp_dir}/extract"; then
                     mapfile -t db_candidates < <(find "${tmp_dir}/extract" -type f -name '*.db' -size +0c -print)
-                    if [[ "${#db_candidates[@]}" -eq 1 ]]; then
-                        candidate_db="${db_candidates[0]}"
-                        if sqlite3 "$candidate_db" 'PRAGMA integrity_check;' 2>/dev/null | grep -qx 'ok'; then
-                            if sqlite3 "$candidate_db" "SELECT name FROM sqlite_master WHERE type='table' AND name='inbounds';" 2>/dev/null | grep -qx 'inbounds'; then
-                                local old_db_backup=""
-                                if [[ -f /etc/x-ui/x-ui.db ]]; then
-                                    old_db_backup="${tmp_dir}/x-ui.db.before-restore"
-                                    cp -a /etc/x-ui/x-ui.db "$old_db_backup"
-                                fi
+if [[ "${#db_candidates[@]}" -eq 1 ]]; then
+    candidate_db="${db_candidates[0]}"
+
+    if sqlite3 "$candidate_db" 'PRAGMA integrity_check;' 2>/dev/null | grep -qx 'ok'; then
+
+        if sqlite3 "$candidate_db" \
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='inbounds';" \
+            2>/dev/null | grep -qx 'inbounds'; then
+
+            # Проверяем, что резервная БД действительно содержит данные 3x-ui
+            local backup_inbounds=0
+            local backup_users=0
+            local backup_settings=0
+
+            backup_inbounds="$(
+                sqlite3 "$candidate_db" \
+                    "SELECT COUNT(*) FROM inbounds;" 2>/dev/null || echo 0
+            )"
+
+            backup_users="$(
+                sqlite3 "$candidate_db" \
+                    "SELECT COUNT(*) FROM users;" 2>/dev/null || echo 0
+            )"
+
+            backup_settings="$(
+                sqlite3 "$candidate_db" \
+                    "SELECT COUNT(*) FROM settings;" 2>/dev/null || echo 0
+            )"
+
+            echo
+            echo ">>> Проверка содержимого резервной БД:"
+            echo "    Размер БД      : $(du -h "$candidate_db" | awk '{print $1}')"
+            echo "    Inbounds       : ${backup_inbounds}"
+            echo "    Users          : ${backup_users}"
+            echo "    Settings       : ${backup_settings}"
+            echo
+
+            # Защита от установки заведомо пустой БД
+            if (( backup_inbounds == 0 && backup_users == 0 )); then
+                echo "❌ Резервная БД успешно расшифрована, но она пустая."
+                echo "   Inbounds: 0"
+                echo "   Users:    0"
+                echo "   Рабочая база сервера НЕ изменена."
+                cleanup_restore_tmp
+                return 0
+            fi
+
+            local old_db_backup=""
+
+            if [[ -f /etc/x-ui/x-ui.db ]]; then
+                old_db_backup="${tmp_dir}/x-ui.db.before-restore"
+                cp -a /etc/x-ui/x-ui.db "$old_db_backup"
+            fi
 
                                 systemctl stop x-ui 2>/dev/null || true
                                 install -o root -g root -m 600 "$candidate_db" /etc/x-ui/x-ui.db
