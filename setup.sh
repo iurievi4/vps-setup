@@ -843,23 +843,23 @@ restore_custom_database() {
     reg_choice="${reg_choice:-0}"
 
     case "$reg_choice" in
-        0)
-            echo "  [i] Выбрана чистая установка."
-            return 0
-            ;;
-        1)
-            db_file="lv-x-ui.db"
-            ;;
-        2)
-            db_file="mw-x-ui.db"
-            ;;
-        3)
-            db_file="tr-x-ui.db"
-            ;;
-        *)
-            echo "❌ Некорректный выбор: '${reg_choice}'"
-            return 0
-            ;;
+     0)
+    echo "  [i] Выбрана чистая установка."
+    return 0
+    ;;
+1)
+    db_file="databases/lv-x-ui.db"
+    ;;
+2)
+    db_file="databases/mw-x-ui.db"
+    ;;
+3)
+    db_file="databases/tr-x-ui.db"
+    ;;
+*)
+    echo "❌ Некорректный выбор: '${reg_choice}'"
+    return 0
+    ;;
     esac
 
     if [[ -z "$token" ]] && [[ -r /dev/tty ]]; then
