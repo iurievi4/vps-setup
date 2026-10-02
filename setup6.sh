@@ -1970,14 +1970,16 @@ echo "======================================================================"
 check_item() {
     local label="$1"
     local condition="$2"
+
     printf "%-24s : " "$label"
+
     if eval "$condition"; then
         echo "OK"
         return 0
     else
         echo "FAIL"
         FINAL_FAILURES=$((FINAL_FAILURES + 1))
-        return 1
+        return 0
     fi
 }
 
@@ -2011,7 +2013,7 @@ if [[ "${#ACTIVE_XRAY_PORTS[@]}" -eq 0 ]]; then
     echo "Xray Inbounds            : NONE (чистая база 3x-ui)"
 else
     for port in "${ACTIVE_XRAY_PORTS[@]}"; do
-        check_item "Xray Port ${port}" "ss -lnt | grep -E ':${port}[[:space:]]' >/dev/null"
+        check_item "Xray Port ${port}" "ss -lnt | grep -E '(:|\*)${port}[[:space:]]' >/dev/null"
     done
 fi
 
@@ -2024,7 +2026,7 @@ else
     echo "WARP SOCKS5              : DISABLED"
 fi
 
-check_item "UFW Firewall" "ufw status | grep -q 'Status: active'"
+check_item "UFW Firewall" "ufw status | grep 'Status: active' >/dev/null"
 
 if [[ "$DISABLE_IPV6" == "1" ]]; then
     check_item "IPv6 Disabled" "[[ \"$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)\" == \"1\" ]]"
