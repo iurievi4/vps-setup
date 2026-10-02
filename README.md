@@ -1,554 +1,281 @@
 # 🚀 VPS Setup & Security Management Toolkit
 
-Комплекс Bash-инструментов для автоматической установки, настройки, защиты и администрирования VPS на **Debian 11/12** и **Ubuntu 20.04/22.04/24.04**.
+Комплексный набор Bash-скриптов для автоматического развёртывания, защиты и администрирования VPS на базе Debian/Ubuntu.
 
-Проект построен модульно: всеми компонентами можно управлять через единый `install.sh` или запускать каждый скрипт отдельно.
+Проект построен по модульному принципу: все основные компоненты можно запускать через единый `install.sh` или использовать независимо.
 
----
+## Возможности
 
-## 📑 Содержание
-
-* [Быстрый старт](#-быстрый-старт)
-* [Структура проекта](#-структура-проекта)
-* [Компоненты](#️-компоненты)
-* [Nginx и сайты по IP](#-nginx-и-сайты-по-ip)
-* [SSH и ключи](#-ssh-и-ключи)
-* [Сетевая безопасность](#️-сетевая-безопасность)
-* [Бэкапы и восстановление](#-бэкапы-и-восстановление)
-* [Безопасная установка](#-безопасная-установка)
-* [Лицензия](#-лицензия)
-
----
-
-# ⚡ Быстрый старт
-
-Главная точка входа — **`install.sh`**.
-
-Он показывает единое меню и при необходимости загружает актуальные версии остальных скриптов непосредственно из GitHub.
-
-### Запуск
-
-```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/iurievi4/vps-setup/main/install.sh)"
-```
-
-Или сначала скачать файл:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/iurievi4/vps-setup/main/install.sh \
-  -o /root/install.sh
-
-chmod +x /root/install.sh
-/root/install.sh
-```
-
-### Меню
-
-```text
-╔══════════════════════════════════════════════════════════╗
-║                      VPS INSTALLER                       ║
-╚══════════════════════════════════════════════════════════╝
-
-  [●] Состояние: СЕРВЕР УЖЕ НАСТРОЕН
-  [●] База 3x-ui: ОБНАРУЖЕНА
-
-  1) Полная автоматическая установка
-  2) Ручной запуск setup.sh
-  3) Установка безопасности
-  4) Управление SSH-ключами
-  5) Шаблоны сайтов и прокси
-  6) Сбросить маркер настройки
-  0) Выход
-```
-
-### CLI-режим
-
-Все основные операции можно запускать без интерактивного меню:
-
-```bash
-bash /root/install.sh 1   # Полная автоматическая установка
-bash /root/install.sh 2   # Ручной запуск setup.sh
-bash /root/install.sh 3   # Security Installer
-bash /root/install.sh 4   # SSH Key Manager
-bash /root/install.sh 5   # Nginx Manager
-bash /root/install.sh 6   # Сброс маркера
-```
-
-Поддерживаются также алиасы:
-
-```bash
-bash /root/install.sh ssh
-bash /root/install.sh ssh-manager
-
-bash /root/install.sh nginx
-bash /root/install.sh templates
-
-bash /root/install.sh reset
-```
+* ⚙️ автоматическая установка и настройка VPS;
+* 🖥️ установка и управление 3x-ui;
+* 🛡️ Fail2ban;
+* 🚫 AntiScanner;
+* 🧦 Cloudflare WARP;
+* 🔑 управление SSH-ключами;
+* 🔥 UFW;
+* 🌐 Nginx;
+* 🎨 готовые HTML-шаблоны сайтов;
+* 🔄 Reverse Proxy;
+* 🔌 Reverse Proxy + WebSocket;
+* 🔐 ACME / Let's Encrypt;
+* 🛡️ Security Headers;
+* 💾 автоматические резервные копии;
+* 📊 расширенный MOTD;
+* 🔧 системная диагностика и полезные команды.
 
 ---
 
-# 📁 Структура проекта
+# 📦 Структура проекта
 
 ```text
 vps-setup/
 │
 ├── install.sh
+│
 ├── setup.sh
-├── nginx-templates.sh
-├── ssh-key-manager.sh
+│
 ├── vps-security-installer.sh
+│
+├── ssh-key-manager.sh
+│
+├── nginx-templates.sh
 │
 ├── nginx/
 │   └── templates/
-│       ├── filecloud/
-│       ├── downloader/
-│       ├── converter/
-│       ├── games-site/
 │       ├── 10gag/
-│       ├── modmanager/
-│       ├── speedtest/
-│       ├── convertit/
 │       ├── 503 error pages/
-│       └── YouTube endless captcha/
+│       ├── YouTube endless captcha/
+│       ├── converter/
+│       ├── convertit/
+│       ├── downloader/
+│       ├── filecloud/
+│       ├── games-site/
+│       ├── modmanager/
+│       └── speedtest/
 │
 └── README.md
 ```
 
 ---
 
-# 🛠️ Компоненты
+# ⚡ Быстрый старт
 
-| Файл                        | Назначение                                                      |
-| --------------------------- | --------------------------------------------------------------- |
-| `install.sh`                | Центральный диспетчер проекта                                   |
-| `setup.sh`                  | Первичная настройка VPS и системного окружения                  |
-| `nginx-templates.sh`        | Nginx, HTML-шаблоны, Reverse Proxy, SSL и Security Headers      |
-| `ssh-key-manager.sh`        | SSH-ключи, `authorized_keys`, парольная аутентификация и backup |
-| `vps-security-installer.sh` | Fail2ban, AntiScanner, WARP и системный MOTD                    |
-| `nginx/templates/`          | Исходники готовых HTML5-шаблонов                                |
+Запуск главного установщика:
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/iurievi4/vps-setup/main/install.sh)"
+```
+
+После запуска откроется меню:
+
+```text
+╔══════════════════════════════════════════════════════════╗
+║                      VPS INSTALLER                       ║
+╚══════════════════════════════════════════════════════════╝
+
+  1) Полная автоматическая установка
+  2) Ручной запуск setup.sh
+  3) Установка безопасности
+  4) Управление SSH-ключами
+  5) Шаблоны сайтов и прокси
+  6) Сброс маркера настройки
+  0) Выход
+```
+
+Также можно сразу передать номер режима:
+
+```bash
+bash install.sh 1
+```
+
+или:
+
+```bash
+bash install.sh 3
+```
 
 ---
 
-# 1. `install.sh` — главный диспетчер
+# 🧩 Центральный установщик install.sh
 
-`install.sh` объединяет остальные компоненты проекта в одном меню.
+`install.sh` является единым диспетчером проекта.
 
-### Режим 1 — полная автоматическая установка
+Он:
 
-Запускает `setup.sh` в автоматическом режиме.
+* проверяет запуск от `root`;
+* при необходимости устанавливает `curl` и `ca-certificates`;
+* загружает актуальные скрипты из GitHub;
+* проверяет загруженные файлы;
+* использует временный каталог;
+* удаляет временные файлы после завершения;
+* определяет наличие уже настроенного VPS;
+* обнаруживает существующую базу 3x-ui;
+* перед повторной установкой создаёт страховочную копию базы.
 
-Используемые параметры:
+## Режимы
 
-* 3x-ui — включён
-* Cloudflare WARP — включён
-* PostgreSQL — отключён
-* MS SQL Server — отключён
-* TorrServer — отключён
+### 1. Полная автоматическая установка
 
-Перед запуском проверяется наличие:
-
-```text
-/etc/x-ui/x-ui.db
+```bash
+bash install.sh 1
 ```
 
-Если база существует, создаётся резервная копия:
+Использует:
 
 ```text
-/root/xui_backups/x-ui-before-setup-<дата>.db
+setup.sh
 ```
 
-При повторном запуске автоматически используется:
+В автоматическом режиме:
 
 ```text
-FORCE_BOOTSTRAP=1
+PostgreSQL       : НЕТ
+MS SQL Server    : НЕТ
+TorrServer       : НЕТ
+Cloudflare WARP  : ДА
+3x-ui            : ДА
 ```
 
-что позволяет повторно запускать `setup.sh` на уже настроенном сервере.
+При наличии существующей базы 3x-ui она предварительно копируется в:
 
-### Режим 2 — ручной `setup.sh`
+```text
+/root/xui_backups/
+```
 
-Запускает `setup.sh` в интерактивном режиме.
+---
 
-### Режим 3 — Security Installer
+### 2. Ручной запуск setup.sh
 
-Запускает:
+```bash
+bash install.sh 2
+```
+
+В этом режиме `setup.sh` запускается интерактивно.
+
+---
+
+### 3. Установка безопасности
+
+```bash
+bash install.sh 3
+```
+
+Запускается:
 
 ```text
 vps-security-installer.sh
 ```
 
-### Режим 4 — SSH Manager
+Компоненты:
 
-Запускает:
+* Fail2ban;
+* AntiScanner;
+* Cloudflare WARP;
+* системный MOTD.
+
+---
+
+### 4. SSH Manager
+
+```bash
+bash install.sh 4
+```
+
+Также доступны:
+
+```bash
+bash install.sh ssh
+```
+
+```bash
+bash install.sh ssh-manager
+```
+
+Запускается:
 
 ```text
 ssh-key-manager.sh
 ```
 
-### Режим 5 — Nginx Manager
+---
 
-Запускает:
+### 5. Nginx Manager
+
+```bash
+bash install.sh 5
+```
+
+Также:
+
+```bash
+bash install.sh nginx
+```
+
+```bash
+bash install.sh templates
+```
+
+Запускается:
 
 ```text
 nginx-templates.sh
 ```
 
-### Режим 6 — сброс маркера
+---
 
-Удаляет:
+### 6. Сброс маркера
+
+```bash
+bash install.sh 6
+```
+
+Также:
+
+```bash
+bash install.sh reset
+```
+
+Удаляется:
 
 ```text
 /etc/vps-bootstrap-complete
 ```
 
-Маркер используется для определения состояния первоначальной настройки VPS.
+Само удаление маркера **не удаляет установленные программы и конфигурацию**. Оно только возвращает состояние маркера в первоначальное.
 
 ---
 
-# 2. `setup.sh` — базовая настройка VPS
+# 🖥️ setup.sh
 
-Основной скрипт подготовки системы.
+Основной скрипт настройки VPS.
 
-### Устанавливает
+Предназначен для первоначального развёртывания и повторного запуска на уже настроенном сервере.
 
-* Nginx
-* Git
-* curl
-* cron
-* iproute2
-* iputils-ping
-* lm-sensors
-* nvme-cli
-* iptables
-* iptables-persistent
-* UFW
-* socat
-* SQLite3
+Перед повторной установкой существующая база:
 
-### Настраивает
+```text
+/etc/x-ui/x-ui.db
+```
 
-* TCP BBR
-* TCP Fast Open
-* системные параметры `sysctl`
-* Swap
-* `vm.swappiness`
-* базовую структуру Nginx
-* cron
-* MOTD
-* SSH
-* firewall
-
-Также создаётся базовая Nginx-заглушка `cloud-node`.
+сохраняется в резервную копию.
 
 ---
 
-# 3. `nginx-templates.sh` — Nginx Manager
+# 🛡️ vps-security-installer.sh
 
-Интерактивный менеджер сайтов, шаблонов и Reverse Proxy.
-
-## Возможности
-
-```text
-🌐 САЙТЫ
-
-1)  Файловый архив
-2)  Медиаархив
-3)  Новостной портал
-4)  Техническая документация
-5)  Корпоративный сайт
-6)  Нейтральная заглушка
-
-🎨 HTML-ШАБЛОНЫ
-
-7)  Cloud Storage
-8)  Download Manager
-9)  File Converter
-10) Games Site
-11) Memes Site
-12) Mod Manager
-13) Speed Test
-14) Video Converter
-15) 503 Error Pages
-16) YouTube Captcha
-
-🔄 ПРОКСИ
-
-17) Reverse Proxy
-18) Reverse Proxy + WebSocket
-19) Управление / удаление Proxy
-
-🔐 SSL И БЕЗОПАСНОСТЬ
-
-20) ACME / Let's Encrypt
-21) Security Headers
-
-📋 УПРАВЛЕНИЕ
-
-22) Текущая конфигурация
-23) Создать backup
-24) Восстановить backup
-```
-
----
-
-# 🌐 Nginx и сайты по IP
-
-Менеджер рассчитан в том числе на VPS, у которого **есть только IP-адрес и нет домена**.
-
-Для обычного HTML-сайта домен не требуется.
-
-Активный сайт работает как:
-
-```nginx
-listen 80 default_server;
-listen [::]:80 default_server;
-server_name _;
-```
-
-Поэтому сайт открывается напрямую:
-
-```text
-http://SERVER_IP
-```
-
-Например:
-
-```text
-http://94.xxx.xxx.xxx
-```
-
-## Переключение шаблонов
-
-На порту `80` используется один активный HTML-сайт.
-
-При выборе нового шаблона:
-
-```text
-Games Site
-     ↓
-Speed Test
-     ↓
-Cloud Storage
-```
-
-предыдущий сайт отключается, а выбранный становится новым `default_server`.
-
-Файл предыдущей конфигурации при этом сохраняется в:
-
-```text
-/etc/nginx/sites-available/
-```
-
-## Proxy изолирован
-
-Reverse Proxy и WebSocket-конфигурации хранятся отдельно и не должны удаляться при смене HTML-шаблона.
-
-Типовая структура:
-
-```text
-/etc/nginx/sites-enabled/
-├── active-site.conf
-├── proxy-*.conf
-└── ...
-```
-
-Перед применением изменений выполняется:
-
-```bash
-nginx -t
-```
-
-и только после успешной проверки выполняется reload.
-
----
-
-# 🎨 HTML-шаблоны
-
-Шаблоны находятся в:
-
-```text
-nginx/templates/
-```
-
-| Меню | Каталог                   | Назначение            |
-| ---: | ------------------------- | --------------------- |
-|    7 | `filecloud`               | Cloud Storage         |
-|    8 | `downloader`              | Download Manager      |
-|    9 | `converter`               | File Converter        |
-|   10 | `games-site`              | Games Site            |
-|   11 | `10gag`                   | Memes Site            |
-|   12 | `modmanager`              | Mod Manager           |
-|   13 | `speedtest`               | Speed Test            |
-|   14 | `convertit`               | Video Converter       |
-|   15 | `503 error pages`         | 503 Error Pages       |
-|   16 | `YouTube endless captcha` | YouTube-style Captcha |
-
-Шаблоны автоматически копируются в соответствующие каталоги `/var/www/`.
-
----
-
-# 🔄 Reverse Proxy
-
-Менеджер поддерживает стандартный HTTP Reverse Proxy:
-
-```text
-Client
-   │
-   ▼
- Nginx
-   │
-   ▼
-Backend
-127.0.0.1:PORT
-```
-
-Также предусмотрен отдельный режим:
-
-```text
-Reverse Proxy + WebSocket
-```
-
-для сервисов, использующих WebSocket, включая:
-
-* 3x-ui
-* Xray
-* VLESS
-
----
-
-# 🔐 ACME / Let's Encrypt
-
-Для получения сертификатов используется ACME / Let's Encrypt.
-
-HTML-сайт может работать по IP без SSL-сертификата.
-
-Для стандартного сертификата Let's Encrypt используется домен, направленный на VPS.
-
-Пример:
-
-```text
-example.com
-     │
-     ▼
-VPS IP
-     │
-     ▼
-Nginx
-     │
-     ▼
-Let's Encrypt
-```
-
-Для ACME challenge используется:
-
-```text
-/.well-known/acme-challenge/
-```
-
----
-
-# 🛡️ Security Headers
-
-Nginx Manager поддерживает добавление HTTP Security Headers, включая:
-
-* `Strict-Transport-Security`
-* `Content-Security-Policy`
-* `X-Frame-Options`
-* `X-Content-Type-Options`
-* `Referrer-Policy`
-* `Permissions-Policy`
-
-Набор заголовков должен соответствовать конкретному сайту и его функциональности.
-
----
-
-# 4. `ssh-key-manager.sh` — SSH Manager
-
-Интерактивное управление SSH-ключами и безопасностью SSH.
-
-## Возможности
-
-```text
-1) Установить SSH-ключ
-2) Показать установленные ключи
-3) Удалить SSH-ключ
-
-4) Отключить вход по паролю
-5) Включить вход по паролю
-
-6) Создать backup authorized_keys & sshd
-7) Восстановить authorized_keys
-8) Проверить sshd -t
-9) Показать SSH-порт и статус службы
-```
-
-### Источники SSH-ключа
-
-Поддерживаются:
-
-* приватный GitHub-репозиторий
-* ручной ввод public key
-* локальный файл
-* генерация новой пары Ed25519
-
-В `authorized_keys` устанавливается только **публичный ключ**.
-
----
-
-# 🔐 Безопасная настройка SSH
-
-Рекомендуемый порядок:
-
-```text
-1. Установить SSH public key
-        ↓
-2. Проверить вход новым ключом
-        ↓
-3. Создать backup
-        ↓
-4. Проверить sshd -t
-        ↓
-5. Отключить PasswordAuthentication
-        ↓
-6. Повторно проверить sshd -t
-        ↓
-7. Выполнить reload SSH
-```
-
-Не закрывайте текущую SSH-сессию, пока новый способ входа не проверен.
-
-### Важно
-
-**Приватный SSH-ключ никогда не должен загружаться в GitHub.**
-
-В репозитории должен находиться только public key:
-
-```text
-id_ed25519.pub
-```
-
----
-
-# 5. `vps-security-installer.sh`
-
-Модуль дополнительной защиты VPS.
+Отдельный установщик компонентов безопасности.
 
 ## Fail2ban
 
-Настраивается SSH jail и защита от повторных попыток входа.
+Настраивается защита SSH.
 
-Конфигурация проекта:
+Конфигурация:
 
 ```text
-/etc/fail2ban/jail.d/vps-setup.local
+/etc/fail2ban/
 ```
 
 Проверка:
-
-```bash
-systemctl status fail2ban --no-pager
-```
 
 ```bash
 fail2ban-client status
@@ -556,16 +283,16 @@ fail2ban-client status
 
 ---
 
-## AntiScanner
+## 🚫 AntiScanner
 
-Модуль блокировки известных сетевых сканеров и нежелательной автоматизированной активности.
+AntiScanner использует `ipset` для блокировки адресов из базы сканеров.
 
-Используется `ipset`.
-
-Основной набор:
+Основные компоненты:
 
 ```text
 SCANNERS-BLOCK-V4
+antiscan.service
+antiscan.timer
 ```
 
 Проверка:
@@ -576,42 +303,235 @@ systemctl status antiscan --no-pager
 
 ---
 
-## Cloudflare WARP
+## 🧦 Cloudflare WARP
 
-В конфигурации проекта WARP может использоваться как локальный outbound SOCKS5-прокси.
-
-Порт:
+Локальный SOCKS5:
 
 ```text
 127.0.0.1:40000
 ```
 
----
+Он используется локальными сервисами для маршрутизации исходящего трафика.
 
-# 🛡️ Сетевая безопасность
+Проверка:
 
-Базовая конфигурация использует нестандартный SSH-порт:
-
-```text
-1241/TCP
+```bash
+curl --socks5 127.0.0.1:40000 https://api.ipify.org
 ```
 
-Типовые порты:
+---
 
-|    Порт | Протокол | Назначение            |
-| ------: | -------- | --------------------- |
-|  `1241` | TCP      | SSH                   |
-|    `80` | TCP      | HTTP / Nginx          |
-|   `443` | TCP      | HTTPS / Proxy         |
-| `40000` | TCP      | Локальный WARP SOCKS5 |
+# 🔑 SSH Key Manager
 
-Проверка UFW:
+`ssh-key-manager.sh` предназначен для управления доступом по SSH-ключам.
+
+## Возможности
+
+```text
+1) Install SSH key
+2) Show keys
+3) Delete key
+4) Disable password login
+5) Enable password login
+6) Backup authorized_keys & sshd
+7) Restore authorized_keys
+8) Check sshd -t
+9) Show SSH port/service
+0) Exit
+```
+
+### Источники SSH-ключа
+
+Можно использовать:
+
+* существующий публичный ключ;
+* GitHub;
+* файл;
+* новый Ed25519-ключ.
+
+Приватный ключ не должен загружаться в GitHub.
+
+На сервер устанавливается только публичная часть:
+
+```text
+*.pub
+```
+
+---
+
+## 🔐 Отключение входа по паролю
+
+Перед отключением рекомендуется:
+
+1. установить SSH-ключ;
+2. проверить вход через вторую SSH-сессию;
+3. создать резервную копию;
+4. проверить `sshd -t`;
+5. только после этого отключать пароль.
+
+Проверка конфигурации:
+
+```bash
+sshd -t
+```
+
+---
+
+# 🌐 Nginx Manager
+
+`nginx-templates.sh` предназначен для управления сайтами и Reverse Proxy.
+
+Запуск:
+
+```bash
+bash install.sh 5
+```
+
+## Встроенные сайты
+
+```text
+1) 📁 Файловый архив
+2) 🎬 Медиаархив
+3) 📰 Новостной портал
+4) 📚 Техническая документация
+5) 🏢 Корпоративный сайт
+6) 🌐 Нейтральная заглушка
+```
+
+Эти шаблоны рассчитаны на использование непосредственно по IP VPS.
+
+Например:
+
+```text
+http://IP_СЕРВЕРА
+```
+
+Для таких шаблонов ввод домена не требуется.
+
+---
+
+## 🎨 Готовые HTML-шаблоны
+
+```text
+7)  ☁️ Cloud Storage
+8)  ⬇️ Download Manager
+9)  📁 File Converter
+10) 🎮 Games Site
+11) 😂 Memes Site
+12) 🛠️ Mod Manager
+13) 🚀 Speed Test
+14) 🎬 Video Converter
+15) ⚠️ 503 Error Pages
+16) 🤖 YouTube Captcha
+```
+
+Соответствие каталогам:
+
+| Шаблон           | Каталог                   |
+| ---------------- | ------------------------- |
+| Cloud Storage    | `filecloud`               |
+| Download Manager | `downloader`              |
+| File Converter   | `converter`               |
+| Games Site       | `games-site`              |
+| Memes Site       | `10gag`                   |
+| Mod Manager      | `modmanager`              |
+| Speed Test       | `speedtest`               |
+| Video Converter  | `convertit`               |
+| 503 Error Pages  | `503 error pages`         |
+| YouTube Captcha  | `YouTube endless captcha` |
+
+---
+
+# 🔄 Reverse Proxy
+
+Nginx Manager поддерживает:
+
+```text
+17) Reverse Proxy
+18) Reverse Proxy + WebSocket
+19) Управление / удаление Proxy
+```
+
+WebSocket-вариант предназначен для сервисов, которым необходим Upgrade/Connection WebSocket, включая соответствующие конфигурации Xray/3x-ui.
+
+Прокси-конфигурации отделены от HTML-сайтов.
+
+---
+
+# 🔐 SSL / Security Headers
+
+В Nginx Manager:
+
+```text
+20) ACME / Let's Encrypt
+21) Security Headers
+```
+
+ACME используется для получения и обновления сертификатов Let's Encrypt.
+
+Security Headers позволяют добавить защитные HTTP-заголовки в конфигурацию сайта.
+
+---
+
+# 💾 Резервные копии
+
+Основной каталог локальных резервных копий 3x-ui:
+
+```text
+/root/xui_backups/
+```
+
+Посмотреть:
+
+```bash
+ls -lah /root/xui_backups/
+```
+
+При повторном запуске `install.sh` существующая база:
+
+```text
+/etc/x-ui/x-ui.db
+```
+
+перед установкой сохраняется в резервную копию.
+
+---
+
+# 🧱 Firewall
+
+Используется UFW.
+
+Основные команды:
+
+```bash
+ufw status
+```
+
+Подробный статус:
 
 ```bash
 ufw status verbose
 ```
 
-Проверка открытых портов:
+Правила с номерами:
+
+```bash
+ufw status numbered
+```
+
+Удаление правила:
+
+```bash
+ufw delete НОМЕР
+```
+
+Перезагрузка:
+
+```bash
+ufw reload
+```
+
+Проверка реально слушающих портов:
 
 ```bash
 ss -lntup
@@ -619,69 +539,533 @@ ss -lntup
 
 ---
 
-# 💾 Бэкапы и восстановление
+# 🚨 ВАЖНО: SSH-порт 666
 
-Проект предусматривает резервное копирование нескольких компонентов.
-
-## База 3x-ui
-
-При запуске `install.sh` существующая база может быть сохранена в:
+После настройки VPS SSH-порт используется:
 
 ```text
-/root/xui_backups/
+666
 ```
 
-Пример:
+**Не закрывайте текущую SSH-сессию до проверки нового подключения.**
 
-```text
-x-ui-before-setup-20261003-120000.db
+Откройте вторую параллельную сессию:
+
+```bash
+ssh -p 666 root@IP_СЕРВЕРА
 ```
 
----
+Только после успешного подключения по `666` можно закрывать старую сессию.
 
-## Nginx
+Проверить порт SSH:
 
-Backup конфигурации:
-
-```text
-/etc/nginx/backups/
+```bash
+sshd -T | grep '^port '
 ```
 
-и:
+Проверить конфигурацию:
 
-```text
-/root/nginx-backups/
+```bash
+sshd -t
 ```
 
-В `nginx-templates.sh` предусмотрено восстановление через меню:
+Проверить службу:
 
-```text
-24) Восстановить backup
+```bash
+systemctl status ssh --no-pager
 ```
 
 ---
 
-## SSH
+# 🖥️ 3x-ui — полезные команды
 
-Резервные копии:
-
-```text
-/root/.ssh/backups/
-```
-
-и:
+Панель:
 
 ```text
-/etc/ssh/backups/
+http://IP_СЕРВЕРА:8784
 ```
 
-Восстановление выполняется через `ssh-key-manager.sh`.
+Реквизиты установки:
+
+```bash
+cat /etc/x-ui/install-result.env
+```
+
+Проверить порт:
+
+```bash
+ss -lntp | grep ':8784'
+```
+
+Статус:
+
+```bash
+systemctl status x-ui --no-pager
+```
+
+Быстрая проверка:
+
+```bash
+systemctl is-active x-ui
+```
+
+Перезапуск:
+
+```bash
+systemctl restart x-ui
+```
+
+Live-логи:
+
+```bash
+journalctl -u x-ui -f
+```
+
+Последние 100 строк:
+
+```bash
+journalctl -u x-ui -n 100 --no-pager
+```
+
+Обновление:
+
+```bash
+x-ui update
+```
+
+Процессы:
+
+```bash
+ps aux | grep -E 'x-ui|xray' | grep -v grep
+```
 
 ---
 
-# 🔍 Проверка конфигурации
+# 🧦 Cloudflare WARP — полезные команды
 
-Перед применением изменений рекомендуется проверять:
+Проверить службу:
+
+```bash
+systemctl status warp-svc --no-pager
+```
+
+Проверить SOCKS5:
+
+```bash
+ss -lntp | grep ':40000'
+```
+
+IP через WARP:
+
+```bash
+curl --socks5 127.0.0.1:40000 https://api.ipify.org
+```
+
+Реальный IPv4 сервера:
+
+```bash
+curl -4 https://api.ipify.org
+```
+
+---
+
+# 🛡️ Fail2ban — полезные команды
+
+Общий статус:
+
+```bash
+fail2ban-client status
+```
+
+SSH jail:
+
+```bash
+fail2ban-client status sshd
+```
+
+Разблокировать IP:
+
+```bash
+fail2ban-client set sshd unbanip IP_АДРЕС
+```
+
+Статус службы:
+
+```bash
+systemctl status fail2ban --no-pager
+```
+
+Live-логи:
+
+```bash
+journalctl -u fail2ban -f
+```
+
+Последние события:
+
+```bash
+journalctl -u fail2ban -n 100 --no-pager
+```
+
+---
+
+# 🚫 AntiScanner — полезные команды
+
+Статус:
+
+```bash
+systemctl status antiscan --no-pager
+```
+
+Обновление базы:
+
+```bash
+/usr/local/bin/update-antiscan.sh
+```
+
+Количество заблокированных IP:
+
+```bash
+cat /etc/antiscan/blocked_count
+```
+
+Проверка ipset:
+
+```bash
+ipset list SCANNERS-BLOCK-V4 | head -n 15
+```
+
+Timer:
+
+```bash
+systemctl status antiscan.timer --no-pager
+```
+
+---
+
+# 🌐 Nginx — полезные команды
+
+Проверка конфигурации:
+
+```bash
+nginx -t
+```
+
+Проверка + мягкая перезагрузка:
+
+```bash
+nginx -t && systemctl reload nginx
+```
+
+Статус:
+
+```bash
+systemctl status nginx --no-pager
+```
+
+Проверка порта:
+
+```bash
+ss -lntp | grep ':80'
+```
+
+Активные сайты:
+
+```bash
+ls -lah /etc/nginx/sites-enabled/
+```
+
+Полная конфигурация:
+
+```bash
+nginx -T
+```
+
+Последние ошибки:
+
+```bash
+journalctl -u nginx -n 100 --no-pager
+```
+
+Live-логи:
+
+```bash
+journalctl -u nginx -f
+```
+
+---
+
+# ⚡ BBR / FQ / IPv6 / Swap
+
+## BBR + FQ
+
+```bash
+sysctl net.ipv4.tcp_congestion_control net.core.default_qdisc
+```
+
+Ожидается:
+
+```text
+net.ipv4.tcp_congestion_control = bbr
+net.core.default_qdisc = fq
+```
+
+## IPv6
+
+```bash
+sysctl net.ipv6.conf.all.disable_ipv6
+```
+
+Если IPv6 отключён:
+
+```text
+net.ipv6.conf.all.disable_ipv6 = 1
+```
+
+## Swap
+
+```bash
+swapon --show
+```
+
+## Swappiness
+
+```bash
+sysctl vm.swappiness
+```
+
+---
+
+# 🔄 Cron и обновление ОС
+
+Задания root:
+
+```bash
+crontab -l
+```
+
+Все systemd timers:
+
+```bash
+systemctl list-timers --all
+```
+
+Обновление пакетов:
+
+```bash
+apt update && apt upgrade -y
+```
+
+Очистка ненужных пакетов:
+
+```bash
+apt autoremove -y
+```
+
+Очистка кэша:
+
+```bash
+apt clean
+```
+
+---
+
+# 📊 Экспресс-проверка VPS
+
+Проверка основных служб, портов, BBR, IPv6 и UFW:
+
+```bash
+echo "=== SERVICES ===" && \
+systemctl is-active nginx x-ui cron fail2ban antiscan warp-svc && \
+echo "=== PORTS ===" && \
+ss -lntp | grep -E ':(666|8784|40000)' && \
+echo "=== BBR / IPV6 ===" && \
+sysctl net.ipv4.tcp_congestion_control net.core.default_qdisc net.ipv6.conf.all.disable_ipv6 && \
+echo "=== UFW ===" && \
+ufw status
+```
+
+---
+
+# 📋 Расширенная диагностика
+
+Базовый полный отчёт:
+
+```bash
+echo "========== HOST ==========" && hostname && uptime && \
+echo -e "\n========== OS ==========" && uname -a && \
+echo -e "\n========== MEMORY ==========" && free -h && \
+echo -e "\n========== DISK ==========" && df -h / && \
+echo -e "\n========== SERVICES ==========" && \
+systemctl is-active nginx x-ui cron fail2ban antiscan warp-svc && \
+echo -e "\n========== PORTS ==========" && \
+ss -lntup | grep -E ':(666|8784|40000)' && \
+echo -e "\n========== BBR / IPV6 ==========" && \
+sysctl net.ipv4.tcp_congestion_control net.core.default_qdisc net.ipv6.conf.all.disable_ipv6 && \
+echo -e "\n========== UFW ==========" && \
+ufw status && \
+echo -e "\n========== WARP ==========" && \
+curl --socks5 127.0.0.1:40000 https://api.ipify.org && echo
+```
+
+---
+
+# 🧠 Мониторинг VPS
+
+## Оперативная память
+
+```bash
+free -h
+```
+
+## Топ процессов по RAM
+
+```bash
+ps aux --sort=-%mem | head -n 10
+```
+
+## Топ процессов по CPU
+
+```bash
+ps aux --sort=-%cpu | head -n 10
+```
+
+## Диск
+
+```bash
+df -h
+```
+
+## Крупнейшие каталоги
+
+```bash
+du -xhd1 / 2>/dev/null | sort -h
+```
+
+## Температура CPU
+
+```bash
+sensors 2>/dev/null || true
+```
+
+## NVMe
+
+```bash
+nvme smart-log /dev/nvme0 2>/dev/null || true
+```
+
+---
+
+# 📝 Systemd / журналы
+
+Ошибки:
+
+```bash
+journalctl -p err -n 100 --no-pager
+```
+
+Ошибки текущей загрузки:
+
+```bash
+journalctl -b -p err --no-pager
+```
+
+Последние события:
+
+```bash
+journalctl -n 100 --no-pager
+```
+
+Live-журнал:
+
+```bash
+journalctl -f
+```
+
+Очистить журналы старше 7 дней:
+
+```bash
+journalctl --vacuum-time=7d
+```
+
+Ограничить размер журналов:
+
+```bash
+journalctl --vacuum-size=200M
+```
+
+---
+
+# 📌 Быстрые горячие команды
+
+| Действие         | Команда                                |
+| ---------------- | -------------------------------------- |
+| Перезапуск 3x-ui | `systemctl restart x-ui`               |
+| Статус 3x-ui     | `systemctl status x-ui --no-pager`     |
+| Логи 3x-ui       | `journalctl -u x-ui -f`                |
+| Тест Nginx       | `nginx -t`                             |
+| Reload Nginx     | `systemctl reload nginx`               |
+| Все порты        | `ss -lntup`                            |
+| SSH-порт         | `sshd -T \| grep '^port '`             |
+| Проверка SSH     | `sshd -t`                              |
+| SSH jail         | `fail2ban-client status sshd`          |
+| UFW правила      | `ufw status numbered`                  |
+| WARP             | `systemctl status warp-svc --no-pager` |
+| AntiScanner      | `systemctl status antiscan --no-pager` |
+| Cron             | `crontab -l`                           |
+| RAM              | `free -h`                              |
+| Диск             | `df -h`                                |
+| Ошибки systemd   | `journalctl -p err -n 100 --no-pager`  |
+| Все timers       | `systemctl list-timers --all`          |
+| Перезагрузка VPS | `reboot`                               |
+
+---
+
+# 🔧 Прямой запуск отдельных скриптов
+
+Все компоненты можно запускать независимо от `install.sh`.
+
+## Основная настройка
+
+```bash
+bash setup.sh
+```
+
+## Безопасность
+
+```bash
+bash vps-security-installer.sh
+```
+
+## SSH Manager
+
+```bash
+bash ssh-key-manager.sh
+```
+
+## Nginx Manager
+
+```bash
+bash nginx-templates.sh
+```
+
+---
+
+# 🔍 Проверка после установки
+
+После завершения установки рекомендуется проверить:
+
+### SSH
+
+```bash
+ssh -p 666 root@IP_СЕРВЕРА
+```
+
+### 3x-ui
+
+```bash
+systemctl is-active x-ui
+```
 
 ### Nginx
 
@@ -689,10 +1073,22 @@ Backup конфигурации:
 nginx -t
 ```
 
-### SSH
+### Fail2ban
 
 ```bash
-sshd -t
+fail2ban-client status
+```
+
+### AntiScanner
+
+```bash
+systemctl status antiscan --no-pager
+```
+
+### WARP
+
+```bash
+systemctl status warp-svc --no-pager
 ```
 
 ### Firewall
@@ -701,121 +1097,102 @@ sshd -t
 ufw status verbose
 ```
 
-### Слушающие порты
+### Открытые порты
 
 ```bash
 ss -lntup
 ```
 
----
-
-# ⚠️ Безопасность
-
-Перед запуском любого скрипта от `root` рекомендуется ознакомиться с его содержимым.
-
-Для безопасной проверки можно сначала скачать файл:
+### BBR
 
 ```bash
-curl -fsSL \
-  https://raw.githubusercontent.com/iurievi4/vps-setup/main/install.sh \
-  -o /root/install.sh
+sysctl net.ipv4.tcp_congestion_control net.core.default_qdisc
 ```
 
-Просмотреть:
+### Swap
 
 ```bash
-less /root/install.sh
-```
-
-И только после проверки запустить:
-
-```bash
-bash /root/install.sh
-```
-
-Не передавайте приватные SSH-ключи, пароли и токены в публичные репозитории.
-
----
-
-# 📦 Прямой запуск компонентов
-
-Каждый модуль можно запускать отдельно.
-
-### Основная установка
-
-```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/iurievi4/vps-setup/main/setup.sh)"
-```
-
-### Nginx Manager
-
-```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/iurievi4/vps-setup/main/nginx-templates.sh)"
-```
-
-### SSH Manager
-
-```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/iurievi4/vps-setup/main/ssh-key-manager.sh)"
-```
-
-### Security Installer
-
-```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/iurievi4/vps-setup/main/vps-security-installer.sh)"
+swapon --show
 ```
 
 ---
 
-# 🧩 Пример последовательной настройки VPS
+# 📁 Основные пути
 
-Типовой сценарий:
+| Назначение                | Путь                           |
+| ------------------------- | ------------------------------ |
+| Маркер установки          | `/etc/vps-bootstrap-complete`  |
+| База 3x-ui                | `/etc/x-ui/x-ui.db`            |
+| Результат установки 3x-ui | `/etc/x-ui/install-result.env` |
+| Бэкапы 3x-ui              | `/root/xui_backups/`           |
+| Nginx                     | `/etc/nginx/`                  |
+| Активные Nginx-сайты      | `/etc/nginx/sites-enabled/`    |
+| Доступные Nginx-сайты     | `/etc/nginx/sites-available/`  |
+| Fail2ban                  | `/etc/fail2ban/`               |
+| AntiScanner               | `/etc/antiscan/`               |
+
+---
+
+# ⚠️ Важные замечания
+
+### SSH
+
+Не отключайте текущую SSH-сессию до проверки нового подключения через порт `666`.
+
+### SSH-ключи
+
+Никогда не размещайте приватный SSH-ключ в публичном или приватном GitHub-репозитории.
+
+В GitHub должен находиться только публичный ключ:
 
 ```text
-install.sh
-    │
-    ├── 1. Полная установка
-    │       │
-    │       └── setup.sh
-    │
-    ├── 3. Security Installer
-    │       ├── Fail2ban
-    │       ├── AntiScanner
-    │       └── WARP
-    │
-    ├── 4. SSH Manager
-    │       └── SSH key / PasswordAuthentication
-    │
-    └── 5. Nginx Manager
-            ├── HTML template
-            ├── Reverse Proxy
-            ├── WebSocket
-            ├── SSL
-            └── Security Headers
+id_ed25519.pub
+```
+
+### Nginx
+
+После изменения конфигурации всегда выполняйте:
+
+```bash
+nginx -t
+```
+
+И только при успешной проверке:
+
+```bash
+systemctl reload nginx
+```
+
+### Firewall
+
+Перед изменением UFW убедитесь, что SSH-порт `666` разрешён.
+
+### Резервные копии
+
+Перед повторной установкой или восстановлением базы желательно проверить наличие актуального файла в:
+
+```text
+/root/xui_backups/
 ```
 
 ---
 
-# 📌 Требования
+# 📜 Лицензия
 
-* Debian 11 / 12
-* Ubuntu 20.04 / 22.04 / 24.04
-* root-доступ
-* рабочее интернет-соединение
-* `curl`
-  *(при необходимости `install.sh` устанавливает его автоматически)*
+Проект распространяется под лицензией MIT.
 
 ---
 
-# 📄 Лицензия
+# 🔗 Репозиторий
 
-Проект распространяется под лицензией **MIT**.
+GitHub:
 
-Используйте, изменяйте и адаптируйте скрипты под собственную инфраструктуру.
-
----
-
-## 🔗 Репозиторий
-
-**GitHub:**
 https://github.com/iurievi4/vps-setup
+
+---
+
+# 👤 Автор
+
+**iurievi4**
+
+Проект предназначен для автоматизации развёртывания и последующего администрирования VPS через набор независимых Bash-инструментов.
