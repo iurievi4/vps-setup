@@ -542,6 +542,7 @@ EOF_ANTISCAN_CONF
 chmod 600 /etc/default/antiscan
 
 cat > "$ANTISCAN_SCRIPT" <<'EOF_ANTISCAN'
+#!/usr/bin/env bash
 set -Eeuo pipefail
 
 source /etc/default/antiscan
