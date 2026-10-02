@@ -1513,19 +1513,28 @@ systemctl restart cron
 # 11. ЛЁГКИЙ, БЫСТРЫЙ И БЕЗОПАСНЫЙ MOTD
 ###############################################################################
 
-echo ">>> Установка быстрого эксплуатационного MOTD..."
+echo ">>> Установка эксплуатационного MOTD..."
 
-# Отключаем стандартный шум Ubuntu/Debian MOTD.
-shopt -s nullglob
-for motd_file in /etc/update-motd.d/*; do
-    [[ "$(basename "$motd_file")" == "99-custom-sysinfo" ]] && continue
-    chmod -x "$motd_file" 2>/dev/null || true
-done
-shopt -u nullglob
+MOTD_DIR="/etc/update-motd.d"
+MOTD_FILE="${MOTD_DIR}/99-custom-sysinfo"
+
+mkdir -p "$MOTD_DIR"
+
+# ---------------------------------------------------------------------------
+# Полностью очищаем стандартный MOTD.
+# В каталоге остаётся только наш 99-custom-sysinfo.
+# ---------------------------------------------------------------------------
+
+find "$MOTD_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + 2>/dev/null || true
+
+# Отключаем Ubuntu/Debian motd-news и release-upgrade MOTD.
 systemctl disable --now motd-news.service motd-news.timer 2>/dev/null || true
 rm -f /var/lib/ubuntu-release-upgrader/release-upgrade-motd 2>/dev/null || true
 
+# ---------------------------------------------------------------------------
 # Сохраняем параметры bootstrap для MOTD и последующей диагностики.
+# ---------------------------------------------------------------------------
+
 cat > /etc/default/vps-bootstrap <<EOF_BOOTSTRAP
 INSTALL_POSTGRES=${INSTALL_POSTGRES}
 INSTALL_MSSQL=${INSTALL_MSSQL}
@@ -1534,225 +1543,689 @@ INSTALL_WARP=${INSTALL_WARP}
 WARP_PROXY_PORT=${WARP_PROXY_PORT}
 XUI_PORT=${XUI_PORT}
 EOF_BOOTSTRAP
+
 chmod 600 /etc/default/vps-bootstrap
 
-# Создаем файл с паролем MSSQL, если он действительно нужен.
+# ---------------------------------------------------------------------------
+# Создаём файл с паролем MSSQL, если он действительно нужен.
+# ---------------------------------------------------------------------------
+
 if [[ "$INSTALL_MSSQL" == "1" && ! -f "$MSSQL_SA_PASSWORD_FILE" ]]; then
     umask 077
-    { echo 'Aa1!'; openssl rand -hex 24; } | tr -d '\n' > "$MSSQL_SA_PASSWORD_FILE"
+    { echo 'Aa1!'; openssl rand -hex 24; } \
+        | tr -d '\n' > "$MSSQL_SA_PASSWORD_FILE"
     chmod 600 "$MSSQL_SA_PASSWORD_FILE"
 fi
 
-cat > /etc/update-motd.d/98-security-status <<'EOF_SECURITY_MOTD'
+# ---------------------------------------------------------------------------
+# ЕДИНЫЙ MOTD
+# ---------------------------------------------------------------------------
+
+cat > "$MOTD_FILE" <<'EOF_MOTD'
 #!/usr/bin/env bash
 
-GREEN='\033[1;32m'
-RED='\033[1;31m'
-NONE='\033[0m'
+###############################################################################
+# VPS CUSTOM MOTD
+###############################################################################
 
-if systemctl is-active --quiet fail2ban 2>/dev/null; then
-    F2B_STATUS="${GREEN}OK${NONE}"
-else
-    F2B_STATUS="${RED}FAIL${NONE}"
-fi
+# Не ломать SSH-сессию из-за ошибок отдельных диагностических команд.
+set +e
 
-if systemctl is-active --quiet fail2ban 2>/dev/null && fail2ban-client status sshd >/dev/null 2>&1; then
-    F2B_BANNED="$(fail2ban-client status sshd 2>/dev/null | awk -F: '/Currently banned:/ {gsub(/^[[:space:]]+/, "", $2); print $2; exit}')"
-    F2B_BANNED="${F2B_BANNED:-0}"
-    F2B_JAIL="${GREEN}OK | banned: ${F2B_BANNED}${NONE}"
-else
-    F2B_JAIL="${RED}FAIL${NONE}"
-fi
+###############################################################################
+# Цвета
+###############################################################################
 
-if systemctl is-active --quiet antiscan.service 2>/dev/null && ipset list SCANNERS-BLOCK-V4 >/dev/null 2>&1 && iptables -C INPUT -m set --match-set SCANNERS-BLOCK-V4 src -j DROP >/dev/null 2>&1; then
-    SCANNER_COUNT="$(ipset list SCANNERS-BLOCK-V4 2>/dev/null | awk '/Number of entries:/ {print $4; exit}')"
-    SCANNER_COUNT="${SCANNER_COUNT:-0}"
-    ANTISCAN_STATUS="${GREEN}OK | networks: ${SCANNER_COUNT}${NONE}"
-else
-    ANTISCAN_STATUS="${RED}FAIL${NONE}"
-fi
-
-printf '\n'
-echo -e "  \033[0;36m🛡️ SECURITY${NONE}"
-printf "    %-22s : %b\n" "Fail2ban" "$F2B_STATUS"
-printf "    %-22s : %b\n" "SSH jail" "$F2B_JAIL"
-printf "    %-22s : %b\n" "AntiScanner" "$ANTISCAN_STATUS"
-EOF_SECURITY_MOTD
-chmod +x /etc/update-motd.d/98-security-status
-
-cat > /etc/update-motd.d/99-custom-sysinfo <<'EOF'
-#!/bin/bash
-
-[[ -r /etc/default/vps-bootstrap ]] && source /etc/default/vps-bootstrap
-INSTALL_POSTGRES="${INSTALL_POSTGRES:-0}"
-INSTALL_MSSQL="${INSTALL_MSSQL:-0}"
-INSTALL_TORRSERVER="${INSTALL_TORRSERVER:-0}"
-WARP_PROXY_PORT="${WARP_PROXY_PORT:-40000}"
-
-# --- Цветовая палитра ---
 NONE='\033[0m'
 GREEN_B='\033[1;32m'
-CYAN='\033[0;36m'
-YELLOW='\033[1;33m'
 RED_B='\033[1;31m'
-PURPLE='\033[0;35m'
+YELLOW_B='\033[1;33m'
+CYAN_B='\033[1;36m'
+PURPLE='\033[1;35m'
+WHITE_B='\033[1;37m'
+GRAY='\033[0;37m'
 
-# --- Uptime ---
-UPTIME=$(uptime -p 2>/dev/null | sed 's/up //' || uptime)
+###############################################################################
+# Ширина рамки
+###############################################################################
 
-# --- Процессы ---
-PROCESSES=$(ps ax 2>/dev/null | wc -l | tr -d ' ')
+LINE="────────────────────────────────────────────────────────────────────────"
 
-# --- Сетевые соединения (чистый вывод чисел) ---
-CONN_ESTAB=$(ss -tun -a 2>/dev/null | awk '/ESTAB/ {c++} END {print c+0}')
-CONN_TOTAL=$(ss -tun -a 2>/dev/null | awk 'NR>1 {c++} END {print c+0}')
+###############################################################################
+# Вспомогательные функции
+###############################################################################
 
-# --- Память ---
-MEM_TOTAL=$(free -m 2>/dev/null | awk '/Mem:/ {print $2}')
-MEM_USED=$(free -m 2>/dev/null | awk '/Mem:/ {print $3}')
-[ -n "$MEM_TOTAL" ] && [ "$MEM_TOTAL" -gt 0 ] && MEM_PCT=$((MEM_USED * 100 / MEM_TOTAL)) || MEM_PCT=0
+status_running() {
+    local service="$1"
 
-# --- Swap ---
-SWAP_TOTAL=$(free -m 2>/dev/null | awk '/Swap:/ {print $2}')
-SWAP_USED=$(free -m 2>/dev/null | awk '/Swap:/ {print $3}')
-[ -n "$SWAP_TOTAL" ] && [ "$SWAP_TOTAL" -gt 0 ] && SWAP_PCT=$((SWAP_USED * 100 / SWAP_TOTAL)) || SWAP_PCT=0
-
-# --- Диск ---
-DISK_TOTAL=$(df -h / 2>/dev/null | awk 'NR==2 {print $2}')
-DISK_USED=$(df -h / 2>/dev/null | awk 'NR==2 {print $3}')
-DISK_PCT=$(df -h / 2>/dev/null | awk 'NR==2 {print $5}' | tr -d '%')
-
-# --- IP с быстрым кэшированием ---
-IP_LOCAL=$(hostname -I 2>/dev/null | awk '{print $1}')
-IP_CACHE="/tmp/pub_ip_cache"
-
-update_pub_ip() {
-    local temp_ip
-    temp_ip=$(curl -s --connect-timeout 2 https://api.ipify.org 2>/dev/null)
-    if [[ "$temp_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        echo "$temp_ip" > "$IP_CACHE"
-    fi
-}
-
-if [ ! -s "$IP_CACHE" ]; then
-    update_pub_ip
-elif find "$IP_CACHE" -mmin +60 -print -quit 2>/dev/null | grep -q .; then
-    update_pub_ip &
-fi
-
-IP_PUB=$(cat "$IP_CACHE" 2>/dev/null || echo "Ожидание...")
-[[ "$IP_PUB" == *"<html"* ]] && IP_PUB="N/A"
-
-# --- SSH-сессии, Cron, APT ---
-SSH_CONN=$(ss -t 2>/dev/null | awk '/ssh/ {c++} END {print c+0}')
-CRON_COUNT=$(crontab -l 2>/dev/null | wc -l || echo 0)
-UPDATES=$(apt-get -s upgrade 2>/dev/null | awk '/^Inst / {c++} END {print c+0}')
-
-# --- Docker ---
-DOCKER_COUNT=$(docker ps -q 2>/dev/null | wc -l || echo 0)
-DOCKER_LIST=$(docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || true)
-
-# --- Статусы служб ---
-check_service() {
-    if systemctl is-active --quiet "$1" 2>/dev/null; then
-        echo -e "${GREEN_B}RUNNING${NONE}"
+    if systemctl is-active --quiet "$service" 2>/dev/null; then
+        printf "%b" "${GREEN_B}RUNNING${NONE}"
     else
-        echo -e "${RED_B}STOPPED${NONE}"
+        printf "%b" "${RED_B}STOPPED${NONE}"
     fi
 }
 
-STATUS_XUI=$(check_service x-ui)
-STATUS_NGINX=$(check_service nginx)
+status_enabled() {
+    local service="$1"
 
-# WARP (только локальная проверка)
-if ss -lnt 2>/dev/null | grep -qE ":${WARP_PROXY_PORT}[[:space:]]"; then
-    STATUS_WARP="${GREEN_B}RUNNING (SOCKS5 :${WARP_PROXY_PORT})${NONE}"
-elif systemctl is-active --quiet warp-svc 2>/dev/null; then
-    STATUS_WARP="${YELLOW}CONNECTING (warp-svc)${NONE}"
-else
-    STATUS_WARP="${RED_B}STOPPED${NONE}"
+    if systemctl is-active --quiet "$service" 2>/dev/null; then
+        printf "%b" "${GREEN_B}OK${NONE}"
+    else
+        printf "%b" "${RED_B}STOPPED${NONE}"
+    fi
+}
+
+###############################################################################
+# Uptime
+###############################################################################
+
+UPTIME_TEXT="$(uptime -p 2>/dev/null | sed 's/^up //')"
+UPTIME_TEXT="${UPTIME_TEXT:-unknown}"
+
+###############################################################################
+# IPv4
+###############################################################################
+
+LOCAL_IPV4="$(
+    hostname -I 2>/dev/null \
+        | tr ' ' '\n' \
+        | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+        | head -n1
+)"
+
+LOCAL_IPV4="${LOCAL_IPV4:-N/A}"
+
+###############################################################################
+# Public IPv4
+###############################################################################
+
+PUB_IP_CACHE="/tmp/pub_ip_cache"
+PUB_IP=""
+
+if [[ -r "$PUB_IP_CACHE" ]]; then
+    CACHE_AGE=$(( $(date +%s) - $(stat -c %Y "$PUB_IP_CACHE" 2>/dev/null || echo 0) ))
+
+    if (( CACHE_AGE < 3600 )); then
+        PUB_IP="$(cat "$PUB_IP_CACHE" 2>/dev/null || true)"
+    fi
 fi
 
-if [[ "$INSTALL_POSTGRES" == "1" ]]; then
-    STATUS_POSTGRES=$(pg_isready >/dev/null 2>&1 && echo -e "${GREEN_B}RUNNING${NONE}" || echo -e "${RED_B}STOPPED${NONE}")
-else
-    STATUS_POSTGRES="${YELLOW}NOT INSTALLED${NONE}"
+if [[ -z "$PUB_IP" ]]; then
+    PUB_IP="$(
+        curl -4 -fsS --max-time 3 https://api.ipify.org 2>/dev/null \
+        || true
+    )"
+
+    if [[ "$PUB_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        printf '%s\n' "$PUB_IP" > "$PUB_IP_CACHE"
+    else
+        PUB_IP="N/A"
+    fi
 fi
 
-if [[ "$INSTALL_TORRSERVER" == "1" ]]; then
-    STATUS_TORRSERVER=$(check_service torrserver)
+###############################################################################
+# RAM
+###############################################################################
+
+read -r MEM_TOTAL_KB MEM_USED_KB MEM_AVAIL_KB < <(
+    awk '
+        /MemTotal:/     { total=$2 }
+        /MemAvailable:/ { avail=$2 }
+        END {
+            used=total-avail
+            printf "%s %s %s\n", total, used, avail
+        }
+    ' /proc/meminfo
+)
+
+MEM_TOTAL_MB=$(( MEM_TOTAL_KB / 1024 ))
+MEM_USED_MB=$(( MEM_USED_KB / 1024 ))
+
+if (( MEM_TOTAL_MB > 0 )); then
+    MEM_PERCENT=$(( MEM_USED_MB * 100 / MEM_TOTAL_MB ))
 else
-    STATUS_TORRSERVER="${YELLOW}NOT INSTALLED${NONE}"
+    MEM_PERCENT=0
 fi
 
-# Проверка MS SQL через безопасный файл пароля
-MSSQL_SA_PASSWORD_FILE="/root/.mssql-sa-password"
-if [[ "$INSTALL_MSSQL" != "1" ]]; then
-    STATUS_MSSQL="${YELLOW}NOT INSTALLED${NONE}"
-elif docker ps --format '{{.Names}}' 2>/dev/null | grep -Eq "^mssql_server$"; then
-    if [[ -r "$MSSQL_SA_PASSWORD_FILE" ]]; then
-        MSSQL_SA_PASSWORD="$(<"$MSSQL_SA_PASSWORD_FILE")"
-        if docker exec mssql_server /opt/mssql-tools18/bin/sqlcmd -S localhost -U SA -P "$MSSQL_SA_PASSWORD" -C -Q "SELECT 1" >/dev/null 2>&1; then
-            STATUS_MSSQL="${GREEN_B}RUNNING${NONE}"
+###############################################################################
+# SWAP
+###############################################################################
+
+SWAP_TOTAL_KB="$(awk '/SwapTotal:/ {print $2}' /proc/meminfo)"
+SWAP_FREE_KB="$(awk '/SwapFree:/ {print $2}' /proc/meminfo)"
+
+SWAP_TOTAL_MB=$(( SWAP_TOTAL_KB / 1024 ))
+SWAP_USED_MB=$(( (SWAP_TOTAL_KB - SWAP_FREE_KB) / 1024 ))
+
+if (( SWAP_TOTAL_MB > 0 )); then
+    SWAP_PERCENT=$(( SWAP_USED_MB * 100 / SWAP_TOTAL_MB ))
+else
+    SWAP_PERCENT=0
+fi
+
+###############################################################################
+# Диск /
+###############################################################################
+
+read -r DISK_TOTAL DISK_USED DISK_PERCENT < <(
+    df -h / 2>/dev/null \
+        | awk 'NR==2 {
+            gsub("%","",$5)
+            print $2,$3,$5
+        }'
+)
+
+DISK_TOTAL="${DISK_TOTAL:-N/A}"
+DISK_USED="${DISK_USED:-N/A}"
+DISK_PERCENT="${DISK_PERCENT:-0}"
+
+###############################################################################
+# Процессы
+###############################################################################
+
+PROCESS_COUNT="$(ps -e --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+PROCESS_COUNT="${PROCESS_COUNT:-0}"
+
+###############################################################################
+# Сетевые соединения
+###############################################################################
+
+ACTIVE_CONNECTIONS="$(
+    ss -H -tun 2>/dev/null \
+        | awk '$1 ~ /^(tcp|udp)$/ && $2 != "0" {count++}
+               END {print count+0}'
+)"
+
+TOTAL_CONNECTIONS="$(
+    ss -H -tun 2>/dev/null \
+        | wc -l \
+        | tr -d ' '
+)"
+
+ACTIVE_CONNECTIONS="${ACTIVE_CONNECTIONS:-0}"
+TOTAL_CONNECTIONS="${TOTAL_CONNECTIONS:-0}"
+
+###############################################################################
+# SSH-сессии
+###############################################################################
+
+SSH_SESSIONS="$(
+    who 2>/dev/null \
+        | awk '$1 != "" {count++}
+               END {print count+0}'
+)"
+
+SSH_SESSIONS="${SSH_SESSIONS:-0}"
+
+###############################################################################
+# Cron
+###############################################################################
+
+CRON_TASKS=0
+
+if [[ -f /etc/crontab ]]; then
+    CRON_TASKS=$(
+        grep -Ev '^[[:space:]]*($|#)' /etc/crontab 2>/dev/null \
+            | wc -l \
+            | tr -d ' '
+    )
+fi
+
+if [[ -d /etc/cron.d ]]; then
+    CRON_TASKS=$(( CRON_TASKS + $(
+        find /etc/cron.d -maxdepth 1 -type f -print0 2>/dev/null \
+            | xargs -0r grep -hEv '^[[:space:]]*($|#)' 2>/dev/null \
+            | wc -l
+    ) ))
+fi
+
+if command -v crontab >/dev/null 2>&1; then
+    ROOT_CRON="$(
+        crontab -l 2>/dev/null \
+            | grep -Ev '^[[:space:]]*($|#)' \
+            | wc -l \
+            | tr -d ' '
+    )"
+
+    CRON_TASKS=$(( CRON_TASKS + ROOT_CRON ))
+fi
+
+CRON_TASKS="${CRON_TASKS:-0}"
+
+###############################################################################
+# APT updates
+###############################################################################
+
+APT_UPDATES=0
+
+if command -v apt >/dev/null 2>&1; then
+    APT_UPDATES="$(
+        apt list --upgradable 2>/dev/null \
+            | tail -n +2 \
+            | grep -c '/' 2>/dev/null
+    )"
+
+    APT_UPDATES="${APT_UPDATES:-0}"
+fi
+
+###############################################################################
+# Fail2ban
+###############################################################################
+
+if systemctl is-active --quiet fail2ban 2>/dev/null; then
+    STATUS_FAIL2BAN="${GREEN_B}RUNNING${NONE}"
+else
+    STATUS_FAIL2BAN="${RED_B}STOPPED${NONE}"
+fi
+
+###############################################################################
+# Fail2ban SSH jail
+###############################################################################
+
+SSH_JAIL_EXISTS=0
+SSH_BANNED=0
+
+if command -v fail2ban-client >/dev/null 2>&1 \
+   && systemctl is-active --quiet fail2ban 2>/dev/null; then
+
+    if fail2ban-client status sshd >/dev/null 2>&1; then
+        SSH_JAIL_EXISTS=1
+
+        SSH_BANNED="$(
+            fail2ban-client status sshd 2>/dev/null \
+                | awk -F': ' '/Currently banned/ {
+                    gsub(/[[:space:]]/, "", $2)
+                    print $2
+                    exit
+                }'
+        )"
+
+        SSH_BANNED="${SSH_BANNED:-0}"
+    fi
+fi
+
+if (( SSH_JAIL_EXISTS == 1 )); then
+    STATUS_SSH_JAIL="${GREEN_B}OK${NONE} | banned: ${SSH_BANNED}"
+else
+    STATUS_SSH_JAIL="${RED_B}STOPPED${NONE}"
+fi
+
+###############################################################################
+# Fail2ban recidive
+###############################################################################
+
+if command -v fail2ban-client >/dev/null 2>&1 \
+   && systemctl is-active --quiet fail2ban 2>/dev/null \
+   && fail2ban-client status recidive >/dev/null 2>&1; then
+
+    STATUS_RECIDIVE="${GREEN_B}OK${NONE}"
+else
+    STATUS_RECIDIVE="${GRAY}N/A${NONE}"
+fi
+
+###############################################################################
+# AntiScanner
+###############################################################################
+
+if systemctl is-active --quiet antiscan.service 2>/dev/null; then
+    ANTISCAN_STATUS="${GREEN_B}RUNNING${NONE}"
+elif systemctl is-enabled --quiet antiscan.service 2>/dev/null; then
+    ANTISCAN_STATUS="${YELLOW_B}STOPPED${NONE}"
+else
+    ANTISCAN_STATUS="${GRAY}NOT INSTALLED${NONE}"
+fi
+
+ANTISCAN_COUNT=0
+
+if command -v ipset >/dev/null 2>&1 \
+   && ipset list SCANNERS-BLOCK-V4 >/dev/null 2>&1; then
+
+    ANTISCAN_COUNT="$(
+        ipset list SCANNERS-BLOCK-V4 2>/dev/null \
+            | awk '/^[0-9]+\./ {count++}
+                   END {print count+0}'
+    )"
+
+    ANTISCAN_COUNT="${ANTISCAN_COUNT:-0}"
+fi
+
+###############################################################################
+# 3x-ui
+###############################################################################
+
+if systemctl is-active --quiet x-ui 2>/dev/null; then
+    STATUS_XUI="${GREEN_B}RUNNING${NONE}"
+elif systemctl is-active --quiet 3x-ui 2>/dev/null; then
+    STATUS_XUI="${GREEN_B}RUNNING${NONE}"
+else
+    STATUS_XUI="${RED_B}STOPPED${NONE}"
+fi
+
+###############################################################################
+# Nginx
+###############################################################################
+
+if systemctl is-active --quiet nginx 2>/dev/null; then
+    STATUS_NGINX="${GREEN_B}RUNNING${NONE}"
+else
+    STATUS_NGINX="${RED_B}STOPPED${NONE}"
+fi
+
+###############################################################################
+# Cloudflare WARP
+###############################################################################
+
+WARP_PROXY_PORT="${WARP_PROXY_PORT:-40000}"
+
+if systemctl is-active --quiet warp-svc 2>/dev/null; then
+
+    if ss -lnt 2>/dev/null | grep -q ":${WARP_PROXY_PORT}[[:space:]]"; then
+        STATUS_WARP="${GREEN_B}RUNNING${NONE} (SOCKS5 :${WARP_PROXY_PORT})"
+    else
+        STATUS_WARP="${GREEN_B}RUNNING${NONE}"
+    fi
+
+elif command -v warp-cli >/dev/null 2>&1; then
+
+    WARP_STATE="$(warp-cli status 2>/dev/null | tr '\n' ' ')"
+
+    if echo "$WARP_STATE" | grep -qi "Connected"; then
+        STATUS_WARP="${GREEN_B}RUNNING${NONE}"
+    else
+        STATUS_WARP="${RED_B}STOPPED${NONE}"
+    fi
+
+else
+    STATUS_WARP="${GRAY}NOT INSTALLED${NONE}"
+fi
+
+###############################################################################
+# PostgreSQL
+###############################################################################
+
+if [[ "${INSTALL_POSTGRES:-0}" == "1" ]]; then
+
+    if systemctl list-unit-files 2>/dev/null \
+        | grep -q '^postgresql\.service'; then
+
+        if systemctl is-active --quiet postgresql 2>/dev/null; then
+            STATUS_POSTGRES="${GREEN_B}RUNNING${NONE}"
         else
-            STATUS_MSSQL="${YELLOW}STARTING/ERROR${NONE}"
+            STATUS_POSTGRES="${RED_B}STOPPED${NONE}"
         fi
     else
-        STATUS_MSSQL="${YELLOW}PASSWORD FILE MISSING${NONE}"
+        STATUS_POSTGRES="${RED_B}STOPPED${NONE}"
     fi
+
 else
-    STATUS_MSSQL="${RED_B}STOPPED${NONE}"
+    STATUS_POSTGRES="${GRAY}NOT INSTALLED${NONE}"
 fi
 
-# Проверка Amnezia VPN в Docker
-if docker ps --format '{{.Names}}' 2>/dev/null | grep -Eq "^amnezia-"; then
+###############################################################################
+# MS SQL Server
+###############################################################################
+
+if [[ "${INSTALL_MSSQL:-0}" == "1" ]]; then
+
+    if systemctl list-unit-files 2>/dev/null \
+        | grep -q '^mssql-server\.service'; then
+
+        if systemctl is-active --quiet mssql-server 2>/dev/null; then
+            STATUS_MSSQL="${GREEN_B}RUNNING${NONE}"
+        else
+            STATUS_MSSQL="${RED_B}STOPPED${NONE}"
+        fi
+    else
+        STATUS_MSSQL="${RED_B}STOPPED${NONE}"
+    fi
+
+else
+    STATUS_MSSQL="${GRAY}NOT INSTALLED${NONE}"
+fi
+
+###############################################################################
+# TorrServer
+###############################################################################
+
+if [[ "${INSTALL_TORRSERVER:-0}" == "1" ]]; then
+
+    if systemctl is-active --quiet torrserver 2>/dev/null; then
+        STATUS_TORRSERVER="${GREEN_B}RUNNING${NONE}"
+    elif systemctl list-unit-files 2>/dev/null \
+        | grep -q '^torrserver\.service'; then
+        STATUS_TORRSERVER="${RED_B}STOPPED${NONE}"
+    elif docker ps --format '{{.Names}}' 2>/dev/null \
+        | grep -qi '^torrserver$'; then
+        STATUS_TORRSERVER="${GREEN_B}RUNNING (Docker)${NONE}"
+    else
+        STATUS_TORRSERVER="${RED_B}STOPPED${NONE}"
+    fi
+
+else
+    STATUS_TORRSERVER="${GRAY}NOT INSTALLED${NONE}"
+fi
+
+###############################################################################
+# Amnezia VPN
+###############################################################################
+
+AMNEZIA_CONTAINER="$(
+    docker ps --format '{{.Names}}' 2>/dev/null \
+        | grep -E '^amnezia-' \
+        | head -n1
+)"
+
+if [[ -n "$AMNEZIA_CONTAINER" ]]; then
     STATUS_AMNEZIA="${GREEN_B}RUNNING (Docker)${NONE}"
 else
-    STATUS_AMNEZIA="${RED_B}STOPPED${NONE}"
+    AMNEZIA_EXISTS="$(
+        docker ps -a --format '{{.Names}}' 2>/dev/null \
+            | grep -E '^amnezia-' \
+            | head -n1
+    )"
+
+    if [[ -n "$AMNEZIA_EXISTS" ]]; then
+        STATUS_AMNEZIA="${RED_B}STOPPED (Docker)${NONE}"
+    else
+        STATUS_AMNEZIA="${GRAY}NOT INSTALLED${NONE}"
+    fi
 fi
 
-# --- Вывод ---
-echo -e "${CYAN}┌────────────────────────────────────────────────────────────────────────┐${NONE}"
-echo -e "  ${GREEN_B}СЕРВЕР ПОДКЛЮЧЕН СТАБИЛЬНО${NONE}"
-echo -e "  Uptime: $UPTIME"
-echo -e "${CYAN}├────────────────────────────────────────────────────────────────────────┤${NONE}"
+###############################################################################
+# Docker
+###############################################################################
 
-echo -e "  ${PURPLE}МЕТРИКИ СИСТЕМЫ:${NONE}"
-printf "    %-22s : %s (Pub: %s)\n" "IPv4 адреса" "$IP_LOCAL" "$IP_PUB"
-printf "    %-22s : %sMB / %sMB (%s%%)\n" "Оперативная память" "$MEM_USED" "$MEM_TOTAL" "$MEM_PCT"
-printf "    %-22s : %sMB / %sMB (%s%%)\n" "Swap" "$SWAP_USED" "$SWAP_TOTAL" "$SWAP_PCT"
-printf "    %-22s : %s / %s (%s%%)\n" "Диск (/)" "$DISK_USED" "$DISK_TOTAL" "$DISK_PCT"
-printf "    %-22s : %s\n" "Всего процессов" "$PROCESSES"
-printf "    %-22s : %s (Всего: %s)\n" "Активные соединения" "$CONN_ESTAB" "$CONN_TOTAL"
-printf "    %-22s : %s\n" "SSH-сессии" "$SSH_CONN"
-printf "    %-22s : %s\n" "Cron задачи" "$CRON_COUNT"
-printf "    %-22s : %s\n" "Обновления APT" "$UPDATES"
+DOCKER_COUNT=0
 
-echo -e "${CYAN}├────────────────────────────────────────────────────────────────────────┤${NONE}"
-echo -e "  ${PURPLE}СТАТУС СЛУЖБ:${NONE}"
-printf "    %-22s : %b\n" "3x-ui / Xray" "$STATUS_XUI"
-printf "    %-22s : %b\n" "Nginx" "$STATUS_NGINX"
-printf "    %-22s : %b\n" "Cloudflare WARP" "$STATUS_WARP"
-printf "    %-22s : %b\n" "PostgreSQL" "$STATUS_POSTGRES"
-printf "    %-22s : %b\n" "MS SQL Server" "$STATUS_MSSQL"
-printf "    %-22s : %b\n" "TorrServer" "$STATUS_TORRSERVER"
-printf "    %-22s : %b\n" "Amnezia VPN" "$STATUS_AMNEZIA"
+if command -v docker >/dev/null 2>&1; then
+    DOCKER_COUNT="$(
+        docker ps -q 2>/dev/null \
+            | wc -l \
+            | tr -d ' '
+    )"
 
-echo -e "${CYAN}├────────────────────────────────────────────────────────────────────────┤${NONE}"
-echo -e "  ${PURPLE}DOCKER:${NONE}"
-printf "    %-22s : %s\n" "Активные контейнеры" "$DOCKER_COUNT"
-if [[ -n "$DOCKER_LIST" ]]; then
-    echo "$DOCKER_LIST"
-else
-    echo -e "    ${YELLOW}Нет активных контейнеров${NONE}"
+    DOCKER_COUNT="${DOCKER_COUNT:-0}"
 fi
 
-echo -e "${CYAN}└────────────────────────────────────────────────────────────────────────┘${NONE}"
+###############################################################################
+# Вывод
+###############################################################################
+
 echo
-EOF
+printf "┌%s┐\n" "$LINE"
+
+printf "  %bСЕРВЕР ПОДКЛЮЧЕН СТАБИЛЬНО%b\n" "$GREEN_B" "$NONE"
+printf "  Uptime: %s\n" "$UPTIME_TEXT"
+
+printf "├%s┤\n" "$LINE"
+
+printf "  %bМЕТРИКИ СИСТЕМЫ:%b\n" "$CYAN_B" "$NONE"
+
+printf "    %-22s : %s (Pub: %s)\n" \
+    "IPv4 адреса" \
+    "$LOCAL_IPV4" \
+    "$PUB_IP"
+
+printf "    %-22s : %sMB / %sMB (%s%%)\n" \
+    "Оперативная память" \
+    "$MEM_USED_MB" \
+    "$MEM_TOTAL_MB" \
+    "$MEM_PERCENT"
+
+printf "    %-22s : %sMB / %sMB (%s%%)\n" \
+    "Swap" \
+    "$SWAP_USED_MB" \
+    "$SWAP_TOTAL_MB" \
+    "$SWAP_PERCENT"
+
+printf "    %-22s : %s / %s (%s%%)\n" \
+    "Диск (/)" \
+    "$DISK_USED" \
+    "$DISK_TOTAL" \
+    "$DISK_PERCENT"
+
+printf "    %-22s : %s\n" \
+    "Всего процессов" \
+    "$PROCESS_COUNT"
+
+printf "    %-22s : %s (Всего: %s)\n" \
+    "Активные соединения" \
+    "$ACTIVE_CONNECTIONS" \
+    "$TOTAL_CONNECTIONS"
+
+printf "    %-22s : %s\n" \
+    "SSH-сессии" \
+    "$SSH_SESSIONS"
+
+printf "    %-22s : %s\n" \
+    "Cron задачи" \
+    "$CRON_TASKS"
+
+printf "    %-22s : %s\n" \
+    "Обновления APT" \
+    "$APT_UPDATES"
+
+printf "├%s┤\n" "$LINE"
+
+printf "  %bСТАТУС СЛУЖБ:%b\n" "$PURPLE" "$NONE"
+
+if [[ "$ANTISCAN_STATUS" != *"NOT INSTALLED"* ]]; then
+    if (( ANTISCAN_COUNT > 0 )); then
+        printf "    %-22s : %b | networks: %s\n" \
+            "AntiScanner" \
+            "$ANTISCAN_STATUS" \
+            "$ANTISCAN_COUNT"
+    else
+        printf "    %-22s : %b\n" \
+            "AntiScanner" \
+            "$ANTISCAN_STATUS"
+    fi
+else
+    printf "    %-22s : %b\n" \
+        "AntiScanner" \
+        "$ANTISCAN_STATUS"
+fi
+
+printf "    %-22s : %b\n" \
+    "Fail2ban" \
+    "$STATUS_FAIL2BAN"
+
+printf "      %-20s : %b\n" \
+    "SSH jail" \
+    "$STATUS_SSH_JAIL"
+
+printf "      %-20s : %b\n" \
+    "recidive" \
+    "$STATUS_RECIDIVE"
+
+printf "    %-22s : %b\n" \
+    "3x-ui / Xray" \
+    "$STATUS_XUI"
+
+printf "    %-22s : %b\n" \
+    "Amnezia VPN" \
+    "$STATUS_AMNEZIA"
+
+printf "    %-22s : %b\n" \
+    "Nginx" \
+    "$STATUS_NGINX"
+
+printf "    %-22s : %b\n" \
+    "Cloudflare WARP" \
+    "$STATUS_WARP"
+
+printf "    %-22s : %b\n" \
+    "PostgreSQL" \
+    "$STATUS_POSTGRES"
+
+printf "    %-22s : %b\n" \
+    "MS SQL Server" \
+    "$STATUS_MSSQL"
+
+printf "    %-22s : %b\n" \
+    "TorrServer" \
+    "$STATUS_TORRSERVER"
+
+printf "├%s┤\n" "$LINE"
+
+printf "  %bDOCKER:%b\n" "$CYAN_B" "$NONE"
+
+printf "    %-22s : %s\n" \
+    "Активные контейнеры" \
+    "$DOCKER_COUNT"
+
+if (( DOCKER_COUNT > 0 )); then
+
+    printf "%s\n" "$(
+        docker ps \
+            --format 'NAMES          STATUS       PORTS
+{{.Names}}\t{{.Status}}\t{{.Ports}}' \
+            2>/dev/null \
+        | sed 's/\t/   /g'
+    )"
+
+fi
+
+printf "└%s┘\n" "$LINE"
+
+echo
+
+exit 0
+EOF_MOTD
 
 chmod +x /etc/update-motd.d/99-custom-sysinfo
 
+# ---------------------------------------------------------------------------
+# Проверка MOTD
+# ---------------------------------------------------------------------------
+
+if [[ ! -x "$MOTD_FILE" ]]; then
+    echo "⚠️ Ошибка: $MOTD_FILE не создан или не исполняемый."
+else
+    echo "✓ Создан единый MOTD: $MOTD_FILE"
+fi
+
+# Проверяем синтаксис.
+if bash -n "$MOTD_FILE"; then
+    echo "✓ Синтаксис MOTD: OK"
+else
+    echo "❌ Ошибка синтаксиса MOTD: $MOTD_FILE"
+fi
+
+# Проверяем, что в каталоге остался только наш MOTD.
+MOTD_FILES="$(
+    find "$MOTD_DIR" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null \
+        | sort
+)"
+
+if [[ "$MOTD_FILES" == "99-custom-sysinfo" ]]; then
+    echo "✓ Каталог $MOTD_DIR очищен."
+    echo "✓ Единственный MOTD: 99-custom-sysinfo"
+else
+    echo "⚠️ В $MOTD_DIR остались файлы:"
+    printf '%s\n' "$MOTD_FILES"
+fi
+
+echo "✓ MOTD установлен."
 
 ###############################################################################
 # 12. ФИНАЛЬНАЯ ПРОВЕРКА И МАРКЕР ЗАВЕРШЕНИЯ
