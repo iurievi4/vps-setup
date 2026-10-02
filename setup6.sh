@@ -1984,7 +1984,7 @@ check_item() {
 FINAL_FAILURES=0
 
 check_item "Nginx" "systemctl is-active --quiet nginx"
-check_item "SSH (:${SSH_PORT})" "ss -lnt | grep -qE ':${SSH_PORT}[[:space:]]'"
+check_item "SSH (:${SSH_PORT})" "ss -lnt | grep -E ':${SSH_PORT}[[:space:]]' >/dev/null"
 check_item "Cron" "systemctl is-active --quiet cron"
 check_item "Fail2ban" "systemctl is-active --quiet fail2ban"
 check_item "Fail2ban SSH jail" "fail2ban-client status sshd >/dev/null 2>&1"
@@ -2011,12 +2011,12 @@ if [[ "${#ACTIVE_XRAY_PORTS[@]}" -eq 0 ]]; then
     echo "Xray Inbounds            : NONE (чистая база 3x-ui)"
 else
     for port in "${ACTIVE_XRAY_PORTS[@]}"; do
-        check_item "Xray Port ${port}" "ss -lnt | grep -qE ':${port}[[:space:]]'"
+        check_item "Xray Port ${port}" "ss -lnt | grep -E ':${port}[[:space:]]' >/dev/null"
     done
 fi
 
 if [[ "$INSTALL_WARP" == "1" ]]; then
-    check_item "WARP SOCKS5 (:${WARP_PROXY_PORT})" "ss -lnt | grep -qE ':${WARP_PROXY_PORT}[[:space:]]'"
+    check_item "WARP SOCKS5 (:${WARP_PROXY_PORT})" "ss -lnt | grep -E ':${WARP_PROXY_PORT}[[:space:]]' >/dev/null"
 elif [[ "$WARP_MANDATORY" == "1" ]]; then
     echo "WARP SOCKS5              : FAIL (отключён при обязательном режиме)"
     FINAL_FAILURES=$((FINAL_FAILURES + 1))
