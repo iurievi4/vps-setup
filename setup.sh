@@ -792,6 +792,7 @@ restore_custom_database() {
     local token="${GH_TOKEN:-}"
     local db_pass="${DB_PASS:-}"
     local repo="iurievi4/my-private-backups"
+    local db_dir="databases"
     local db_file=""
     local tmp_dir=""
     local downloaded=""
