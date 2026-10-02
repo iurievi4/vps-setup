@@ -873,23 +873,25 @@ restore_custom_database() {
     fi
 
     tmp_dir="$(mktemp -d /tmp/xui-restore.XXXXXX)"
-    downloaded="${tmp_dir}/${db_file}"
-    decrypted_archive="${tmp_dir}/backup.tar.gz"
-    mkdir -p "${tmp_dir}/extract"
+downloaded="${tmp_dir}/${db_file}"
+decrypted_archive="${tmp_dir}/backup.tar.gz"
 
-    echo
-    echo ">>> Скачивание резервной базы ${db_file}..."
+mkdir -p "$(dirname "$downloaded")"
+mkdir -p "${tmp_dir}/extract"
 
-    http_code="$(
-        curl -4 -sS -w '%{http_code}' \
-            -H "Authorization: Bearer ${token}" \
-            -H 'Accept: application/vnd.github.raw+json' \
-            --connect-timeout 15 \
-            --max-time 300 \
-            -o "$downloaded" \
-            "https://api.github.com/repos/${repo}/contents/${db_file}" \
-            || true
-    )"
+echo
+echo ">>> Скачивание резервной базы ${db_file}..."
+
+http_code="$(
+    curl -4 -sS -w '%{http_code}' \
+        -H "Authorization: Bearer ${token}" \
+        -H 'Accept: application/vnd.github.raw+json' \
+        --connect-timeout 15 \
+        --max-time 300 \
+        -o "$downloaded" \
+        "https://api.github.com/repos/${repo}/contents/${db_file}" \
+        || true
+)"
 
     if [[ "$http_code" != "200" ]] || [[ ! -s "$downloaded" ]]; then
         echo "❌ Ошибка скачивания базы (HTTP: ${http_code:-unknown})."
