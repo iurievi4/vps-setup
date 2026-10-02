@@ -2013,7 +2013,14 @@ if [[ "${#ACTIVE_XRAY_PORTS[@]}" -eq 0 ]]; then
     echo "Xray Inbounds            : NONE (чистая база 3x-ui)"
 else
     for port in "${ACTIVE_XRAY_PORTS[@]}"; do
-        check_item "Xray Port ${port}" "ss -lnt | grep -E '(:|\*)${port}[[:space:]]' >/dev/null"
+        printf "%-24s : " "Xray Port ${port}"
+
+        if ss -lnt | grep -E "(:|\*)${port}[[:space:]]" >/dev/null; then
+            echo "OK"
+        else
+            echo "FAIL"
+            FINAL_FAILURES=$((FINAL_FAILURES + 1))
+        fi
     done
 fi
 
