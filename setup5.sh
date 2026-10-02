@@ -866,6 +866,7 @@ restore_custom_database() {
         local __resultvar="$2"
         local ch value=""
         printf '%s' "$prompt" >/dev/tty
+
         while IFS= read -r -s -n 1 ch </dev/tty; do
             if [[ -z "$ch" ]]; then
                 printf '\n' >/dev/tty
@@ -880,12 +881,17 @@ restore_custom_database() {
                 printf '*' >/dev/tty
             fi
         done
+
         printf -v "$__resultvar" '%s' "$value"
     }
 
     cleanup_restore_tmp() {
         [[ -n "$tmp_dir" && -d "$tmp_dir" ]] && rm -rf "$tmp_dir"
     }
+
+    # ================================================================
+    # Выбор конфигурации
+    # ================================================================
 
     if [[ -z "$reg_choice" ]] && [[ -r /dev/tty ]]; then
         echo
@@ -899,34 +905,65 @@ restore_custom_database() {
     fi
 
     reg_choice="${reg_choice:-0}"
+
     case "$reg_choice" in
-        0) echo "  [i] Выбрана чистая установка."; return 0 ;;
-        1) db_file="lv-x-ui.db" ;;
-        2) db_file="mw-x-ui.db" ;;
-        3) db_file="tr-x-ui.db" ;;
-        *) echo "❌ Некорректный выбор: '${reg_choice}'"; return 0 ;;
+        0)
+            echo "  [i] Выбрана чистая установка."
+            return 0
+            ;;
+        1)
+            db_file="lv-x-ui.db"
+            ;;
+        2)
+            db_file="mw-x-ui.db"
+            ;;
+        3)
+            db_file="tr-x-ui.db"
+            ;;
+        *)
+            echo "❌ Некорректный выбор: '${reg_choice}'"
+            return 0
+            ;;
     esac
+
+    # ================================================================
+    # GitHub Token
+    # ================================================================
 
     if [[ -z "$token" ]] && [[ -r /dev/tty ]]; then
         read_secret_masked "Введите GitHub Token: " token
     fi
+
     if [[ -z "$token" ]]; then
-        echo "❌ GitHub Token не указан. Восстановление пропущено; установка продолжается."
+        echo "❌ GitHub Token не указан."
+        echo "   Восстановление пропущено; установка продолжается."
         return 0
     fi
 
+    # ================================================================
+    # Временный каталог
+    # ================================================================
+
     tmp_dir="$(mktemp -d /tmp/xui-restore.XXXXXX)"
+
     downloaded="${tmp_dir}/${db_file}"
     decrypted_archive="${tmp_dir}/backup.tar.gz"
 
+    mkdir -p "${tmp_dir}/extract"
+
     echo
     echo ">>> Скачивание резервной базы ${db_file}..."
-    http_code="$(curl -4 -sS -w '%{http_code}' \
-        -H "Authorization: Bearer ${token}" \
-        -H 'Accept: application/vnd.github.raw+json' \
-        --connect-timeout 15 --max-time 300 \
-        -o "$downloaded" \
-        "https://api.github.com/repos/${repo}/contents/${db_file}" || true)"
+
+    http_code="$(
+        curl -4 -sS -w '%{http_code}' \
+            -H "Authorization: Bearer ${token}" \
+            -H 'Accept: application/vnd.github.raw+json' \
+            --connect-timeout 15 \
+            --max-time 300 \
+            -o "$downloaded" \
+            "https://api.github.com/repos/${repo}/contents/${db_file}" \
+            || true
+    )"
 
     if [[ "$http_code" != "200" ]] || [[ ! -s "$downloaded" ]]; then
         echo "❌ Ошибка скачивания базы (HTTP: ${http_code:-unknown})."
@@ -934,18 +971,34 @@ restore_custom_database() {
         return 0
     fi
 
+    echo "✓ Резервная база скачана."
+    echo "  Размер: $(du -h "$downloaded" | awk '{print $1}')"
+
+    # ================================================================
+    # Проверяем формат
+    # ================================================================
+
     if head -c 16 "$downloaded" 2>/dev/null | grep -q '^SQLite format 3'; then
-        echo "❌ Файл ${db_file} является обычной SQLite-базой, а не AES-256-CBC резервной копией."
-        echo "   Пароль проверять бессмысленно: проблема в формате самой резервной копии."
+        echo
+        echo "❌ Файл ${db_file} является обычной SQLite-базой."
+        echo "   Ожидалась AES-256-CBC резервная копия."
         echo "   Рабочая база сервера НЕ изменена."
+
         cleanup_restore_tmp
         return 0
     fi
 
+    # ================================================================
+    # Расшифровка — максимум 3 попытки
+    # ================================================================
+
     echo
     echo "Введите мастер-пароль базы. Допустимо до 3 попыток."
+
     for attempt in 1 2 3; do
+
         db_pass=""
+
         if [[ -n "${DB_PASS:-}" && "$attempt" -eq 1 ]]; then
             db_pass="$DB_PASS"
         elif [[ -r /dev/tty ]]; then
@@ -954,123 +1007,638 @@ restore_custom_database() {
             break
         fi
 
-        if [[ -n "$db_pass" ]]; then
-            rm -f "$decrypted_archive"
-            if openssl enc -d -aes-256-cbc -pbkdf2 \
-                -in "$downloaded" -out "$decrypted_archive" \
-                -pass pass:"$db_pass" 2>/dev/null \
-                && [[ -s "$decrypted_archive" ]] \
-                && tar -tzf "$decrypted_archive" >/dev/null 2>&1; then
+        if [[ -z "$db_pass" ]]; then
+            echo "❌ Пароль не введён."
+            continue
+        fi
 
-                rm -rf "${tmp_dir}/extract"
-                mkdir -p "${tmp_dir}/extract"
-                if tar -xzf "$decrypted_archive" -C "${tmp_dir}/extract"; then
-                    mapfile -t db_candidates < <(find "${tmp_dir}/extract" -type f -name '*.db' -size +0c -print)
-if [[ "${#db_candidates[@]}" -eq 1 ]]; then
-    candidate_db="${db_candidates[0]}"
+        rm -f "$decrypted_archive"
+        rm -rf "${tmp_dir}/extract"
+        mkdir -p "${tmp_dir}/extract"
 
-    if sqlite3 "$candidate_db" 'PRAGMA integrity_check;' 2>/dev/null | grep -qx 'ok'; then
+        # ------------------------------------------------------------
+        # AES-256-CBC + PBKDF2
+        # ------------------------------------------------------------
 
-        if sqlite3 "$candidate_db" \
+        if ! openssl enc -d -aes-256-cbc -pbkdf2 \
+            -in "$downloaded" \
+            -out "$decrypted_archive" \
+            -pass pass:"$db_pass" \
+            2>/dev/null; then
+
+            if (( attempt < 3 )); then
+                echo "❌ Неверный пароль."
+                echo "   Осталось попыток: $((3 - attempt))."
+            fi
+
+            continue
+        fi
+
+        # ------------------------------------------------------------
+        # Проверяем tar.gz
+        # ------------------------------------------------------------
+
+        if [[ ! -s "$decrypted_archive" ]] ||
+           ! tar -tzf "$decrypted_archive" >/dev/null 2>&1; then
+
+            if (( attempt < 3 )); then
+                echo "❌ Неверный пароль или повреждённый архив."
+                echo "   Осталось попыток: $((3 - attempt))."
+            fi
+
+            continue
+        fi
+
+        echo "✓ AES-256-CBC + PBKDF2 → tar.gz успешно расшифровано."
+
+        # ------------------------------------------------------------
+        # Распаковка ТОЛЬКО во временный каталог
+        # ------------------------------------------------------------
+
+        echo
+        echo ">>> Распаковка резервной БД во временный каталог..."
+
+        if ! tar -xzf "$decrypted_archive" -C "${tmp_dir}/extract"; then
+            echo "❌ Не удалось распаковать tar.gz."
+            continue
+        fi
+
+        # ------------------------------------------------------------
+        # Ищем ровно один DB
+        # ------------------------------------------------------------
+
+        local db_candidates=()
+
+        mapfile -t db_candidates < <(
+            find "${tmp_dir}/extract" \
+                -type f \
+                -name '*.db' \
+                -size +0c \
+                -print
+        )
+
+        if [[ "${#db_candidates[@]}" -ne 1 ]]; then
+            echo "❌ В архиве найдено DB-файлов: ${#db_candidates[@]}."
+            echo "   Ожидался ровно один *.db."
+            continue
+        fi
+
+        candidate_db="${db_candidates[0]}"
+
+        echo "✓ Найдена БД:"
+        echo "  $candidate_db"
+
+        # ============================================================
+        # SQLite integrity_check
+        # ============================================================
+
+        if ! sqlite3 "$candidate_db" \
+            'PRAGMA integrity_check;' 2>/dev/null | grep -qx 'ok'; then
+
+            echo "❌ SQLite integrity_check не пройден."
+            continue
+        fi
+
+        echo "✓ SQLite integrity_check: OK"
+
+        # ============================================================
+        # Проверка таблиц
+        # ============================================================
+
+        if ! sqlite3 "$candidate_db" \
             "SELECT name FROM sqlite_master WHERE type='table' AND name='inbounds';" \
             2>/dev/null | grep -qx 'inbounds'; then
 
-            # Проверяем, что резервная БД действительно содержит данные 3x-ui
-            local backup_inbounds=0
-            local backup_users=0
-            local backup_settings=0
-
-            backup_inbounds="$(
-                sqlite3 "$candidate_db" \
-                    "SELECT COUNT(*) FROM inbounds;" 2>/dev/null || echo 0
-            )"
-
-            backup_users="$(
-                sqlite3 "$candidate_db" \
-                    "SELECT COUNT(*) FROM users;" 2>/dev/null || echo 0
-            )"
-
-            backup_settings="$(
-                sqlite3 "$candidate_db" \
-                    "SELECT COUNT(*) FROM settings;" 2>/dev/null || echo 0
-            )"
-
-            echo
-            echo ">>> Проверка содержимого резервной БД:"
-            echo "    Размер БД      : $(du -h "$candidate_db" | awk '{print $1}')"
-            echo "    Inbounds       : ${backup_inbounds}"
-            echo "    Users          : ${backup_users}"
-            echo "    Settings       : ${backup_settings}"
-            echo
-
-            # Защита от установки заведомо пустой БД
-            if (( backup_inbounds == 0 && backup_users == 0 )); then
-                echo "❌ Резервная БД успешно расшифрована, но она пустая."
-                echo "   Inbounds: 0"
-                echo "   Users:    0"
-                echo "   Рабочая база сервера НЕ изменена."
-                cleanup_restore_tmp
-                return 0
-            fi
-
-            local old_db_backup=""
-
-            if [[ -f /etc/x-ui/x-ui.db ]]; then
-                old_db_backup="${tmp_dir}/x-ui.db.before-restore"
-                cp -a /etc/x-ui/x-ui.db "$old_db_backup"
-            fi
-
-                                systemctl stop x-ui 2>/dev/null || true
-                                install -o root -g root -m 600 "$candidate_db" /etc/x-ui/x-ui.db
-                                sqlite3 /etc/x-ui/x-ui.db 'UPDATE client_traffics SET up = 0, down = 0;' 2>/dev/null || true
-                                sqlite3 /etc/x-ui/x-ui.db 'UPDATE inbounds SET up = 0, down = 0;' 2>/dev/null || true
-                                sqlite3 /etc/x-ui/x-ui.db 'DELETE FROM inbound_client_ips;' 2>/dev/null || true
-
-                                if systemctl restart x-ui 2>/dev/null && sleep 5 && systemctl is-active --quiet x-ui; then
-                                    echo "✓ База ${db_file} успешно проверена и установлена."
-                                    echo "✓ AES-256-CBC + PBKDF2 → tar.gz → SQLite integrity_check: OK."
-                                    echo "✓ Счетчики трафика обнулены."
-                                    cleanup_restore_tmp
-                                    return 0
-                                fi
-
-                                echo "❌ x-ui не запустился после установки базы. Откатываю предыдущую БД."
-                                systemctl stop x-ui 2>/dev/null || true
-                                if [[ -n "$old_db_backup" && -f "$old_db_backup" ]]; then
-                                    install -o root -g root -m 600 "$old_db_backup" /etc/x-ui/x-ui.db
-                                    systemctl start x-ui 2>/dev/null || true
-                                fi
-                                cleanup_restore_tmp
-                                return 0
-                            fi
-                            echo "❌ Архив расшифрован, но внутри нет таблицы inbounds 3x-ui."
-                        else
-                            echo "❌ SQLite integrity_check не пройден."
-                        fi
-                    else
-                        echo "❌ В архиве найдено DB-файлов: ${#db_candidates[@]}. Ожидался ровно один *.db."
-                    fi
-                else
-                    echo "❌ Не удалось распаковать tar.gz после расшифровки."
-                fi
-            fi
+            echo "❌ В БД отсутствует таблица inbounds."
+            continue
         fi
 
-        if (( attempt < 3 )); then
-            echo "❌ Неверный пароль или поврежденная резервная копия. Осталось попыток: $((3 - attempt))."
+        if ! sqlite3 "$candidate_db" \
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='users';" \
+            2>/dev/null | grep -qx 'users'; then
+
+            echo "❌ В БД отсутствует таблица users."
+            continue
         fi
+
+        if ! sqlite3 "$candidate_db" \
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='settings';" \
+            2>/dev/null | grep -qx 'settings'; then
+
+            echo "❌ В БД отсутствует таблица settings."
+            continue
+        fi
+
+        # ============================================================
+        # Проверка содержимого
+        # ============================================================
+
+        local backup_inbounds=0
+        local backup_users=0
+        local backup_settings=0
+
+        backup_inbounds="$(
+            sqlite3 "$candidate_db" \
+                "SELECT COUNT(*) FROM inbounds;" \
+                2>/dev/null || echo 0
+        )"
+
+        backup_users="$(
+            sqlite3 "$candidate_db" \
+                "SELECT COUNT(*) FROM users;" \
+                2>/dev/null || echo 0
+        )"
+
+        backup_settings="$(
+            sqlite3 "$candidate_db" \
+                "SELECT COUNT(*) FROM settings;" \
+                2>/dev/null || echo 0
+        )"
+
+        echo
+        echo ">>> Проверка содержимого резервной БД:"
+        echo "    Размер БД      : $(du -h "$candidate_db" | awk '{print $1}')"
+        echo "    Inbounds       : ${backup_inbounds}"
+        echo "    Users          : ${backup_users}"
+        echo "    Settings       : ${backup_settings}"
+        echo
+
+        if (( backup_inbounds < 1 )); then
+            echo "❌ Резервная БД не содержит inbounds."
+            echo "   Рабочая база сервера НЕ изменена."
+            cleanup_restore_tmp
+            return 0
+        fi
+
+        if (( backup_users < 1 )); then
+            echo "❌ Резервная БД не содержит users."
+            echo "   Рабочая база сервера НЕ изменена."
+            cleanup_restore_tmp
+            return 0
+        fi
+
+        echo "✓ Резервная БД содержит рабочую конфигурацию."
+
+        # ============================================================
+        # Теперь только здесь начинаем менять рабочую БД
+        # ============================================================
+
+        local XUI_DB="/etc/x-ui/x-ui.db"
+        local old_db_backup=""
+
+        # ------------------------------------------------------------
+        # Остановка x-ui
+        # ------------------------------------------------------------
+
+        echo
+        echo ">>> Остановка панели 3x-ui..."
+
+        systemctl stop x-ui 2>/dev/null || true
+
+        sleep 2
+
+        if systemctl is-active --quiet x-ui; then
+            echo "❌ x-ui не удалось остановить."
+            echo "   Рабочая база НЕ изменена."
+            cleanup_restore_tmp
+            return 0
+        fi
+
+        echo "✓ x-ui остановлен."
+
+        # ------------------------------------------------------------
+        # Backup текущей рабочей БД
+        # ------------------------------------------------------------
+
+        if [[ -f "$XUI_DB" ]]; then
+
+            mkdir -p /root/xui_backups
+
+            old_db_backup="/root/xui_backups/x-ui-before-restore-$(date +%Y%m%d-%H%M%S).db"
+
+            cp -a "$XUI_DB" "$old_db_backup"
+
+            echo "✓ Предыдущая БД сохранена:"
+            echo "  $old_db_backup"
+        fi
+
+        # ============================================================
+        # Подготовка временной БД В /etc/x-ui
+        # ============================================================
+
+        local install_tmp="/etc/x-ui/x-ui.db.restore.$$"
+
+        rm -f "$install_tmp"
+
+        cp -a "$candidate_db" "$install_tmp"
+
+        chown root:root "$install_tmp"
+        chmod 600 "$install_tmp"
+
+        # ------------------------------------------------------------
+        # Проверяем ещё раз
+        # ------------------------------------------------------------
+
+        echo
+        echo ">>> Проверка БД перед заменой..."
+
+        if ! sqlite3 "$install_tmp" \
+            'PRAGMA integrity_check;' 2>/dev/null | grep -qx 'ok'; then
+
+            echo "❌ Проверка БД перед заменой не пройдена."
+
+            rm -f "$install_tmp"
+
+            systemctl start x-ui 2>/dev/null || true
+
+            cleanup_restore_tmp
+            return 0
+        fi
+
+        local install_inbounds
+        local install_users
+        local install_settings
+
+        install_inbounds="$(
+            sqlite3 "$install_tmp" \
+                "SELECT COUNT(*) FROM inbounds;" \
+                2>/dev/null || echo 0
+        )"
+
+        install_users="$(
+            sqlite3 "$install_tmp" \
+                "SELECT COUNT(*) FROM users;" \
+                2>/dev/null || echo 0
+        )"
+
+        install_settings="$(
+            sqlite3 "$install_tmp" \
+                "SELECT COUNT(*) FROM settings;" \
+                2>/dev/null || echo 0
+        )"
+
+        echo "    Inbounds       : $install_inbounds"
+        echo "    Users          : $install_users"
+        echo "    Settings       : $install_settings"
+
+        if (( install_inbounds < 1 || install_users < 1 )); then
+
+            echo "❌ БД перед установкой неожиданно пустая."
+
+            rm -f "$install_tmp"
+
+            systemctl start x-ui 2>/dev/null || true
+
+            cleanup_restore_tmp
+            return 0
+        fi
+
+        # ============================================================
+        # АТОМАРНАЯ замена
+        # ============================================================
+
+        echo
+        echo ">>> Замена рабочей БД..."
+
+        mv -f "$install_tmp" "$XUI_DB"
+
+        chown root:root "$XUI_DB"
+        chmod 600 "$XUI_DB"
+
+        echo "✓ /etc/x-ui/x-ui.db заменена."
+
+        # ============================================================
+        # Проверка ПОСЛЕ замены
+        # ============================================================
+
+        echo
+        echo ">>> Проверка установленной БД..."
+
+        local installed_inbounds
+        local installed_users
+        local installed_settings
+
+        installed_inbounds="$(
+            sqlite3 "$XUI_DB" \
+                "SELECT COUNT(*) FROM inbounds;" \
+                2>/dev/null || echo 0
+        )"
+
+        installed_users="$(
+            sqlite3 "$XUI_DB" \
+                "SELECT COUNT(*) FROM users;" \
+                2>/dev/null || echo 0
+        )"
+
+        installed_settings="$(
+            sqlite3 "$XUI_DB" \
+                "SELECT COUNT(*) FROM settings;" \
+                2>/dev/null || echo 0
+        )"
+
+        echo "    Inbounds       : $installed_inbounds"
+        echo "    Users          : $installed_users"
+        echo "    Settings       : $installed_settings"
+
+        if (( installed_inbounds < 1 || installed_users < 1 )); then
+
+            echo "❌ После замены рабочая БД оказалась пустой."
+
+            if [[ -n "$old_db_backup" && -f "$old_db_backup" ]]; then
+                cp -a "$old_db_backup" "$XUI_DB"
+                chown root:root "$XUI_DB"
+                chmod 600 "$XUI_DB"
+                echo "✓ Предыдущая БД восстановлена."
+            fi
+
+            systemctl start x-ui 2>/dev/null || true
+
+            cleanup_restore_tmp
+            return 0
+        fi
+
+        # ============================================================
+        # Обнуление трафика
+        # ============================================================
+
+        echo
+        echo ">>> Обнуление счетчиков трафика..."
+
+        sqlite3 "$XUI_DB" <<'SQL'
+UPDATE client_traffics SET up = 0, down = 0;
+UPDATE inbounds SET up = 0, down = 0;
+DELETE FROM inbound_client_ips;
+SQL
+
+        echo "✓ Счетчики трафика обнулены."
+
+        # ============================================================
+        # Проверка после изменения БД
+        # ============================================================
+
+        echo
+        echo ">>> Проверка БД после обнуления..."
+
+        if ! sqlite3 "$XUI_DB" \
+            'PRAGMA integrity_check;' 2>/dev/null | grep -qx 'ok'; then
+
+            echo "❌ integrity_check после изменения БД не пройден."
+
+            if [[ -n "$old_db_backup" && -f "$old_db_backup" ]]; then
+                cp -a "$old_db_backup" "$XUI_DB"
+                chown root:root "$XUI_DB"
+                chmod 600 "$XUI_DB"
+            fi
+
+            systemctl start x-ui 2>/dev/null || true
+
+            cleanup_restore_tmp
+            return 0
+        fi
+
+        installed_inbounds="$(
+            sqlite3 "$XUI_DB" \
+                "SELECT COUNT(*) FROM inbounds;" \
+                2>/dev/null || echo 0
+        )"
+
+        installed_users="$(
+            sqlite3 "$XUI_DB" \
+                "SELECT COUNT(*) FROM users;" \
+                2>/dev/null || echo 0
+        )"
+
+        echo "    Inbounds       : $installed_inbounds"
+        echo "    Users          : $installed_users"
+
+        if (( installed_inbounds < 1 )); then
+
+            echo "❌ После обработки БД inbounds исчезли."
+
+            if [[ -n "$old_db_backup" && -f "$old_db_backup" ]]; then
+                cp -a "$old_db_backup" "$XUI_DB"
+                chown root:root "$XUI_DB"
+                chmod 600 "$XUI_DB"
+            fi
+
+            systemctl start x-ui 2>/dev/null || true
+
+            cleanup_restore_tmp
+            return 0
+        fi
+
+        # ============================================================
+        # Запуск x-ui
+        # ============================================================
+
+        echo
+        echo ">>> Запуск панели 3x-ui..."
+
+        if ! systemctl start x-ui 2>/dev/null; then
+            echo "❌ Команда запуска x-ui завершилась ошибкой."
+        fi
+
+        sleep 5
+
+        if ! systemctl is-active --quiet x-ui; then
+
+            echo
+            echo "❌ x-ui не запустился после восстановления."
+
+            echo
+            echo ">>> Последние сообщения x-ui:"
+            journalctl -u x-ui -n 50 --no-pager || true
+
+            # --------------------------------------------------------
+            # Rollback
+            # --------------------------------------------------------
+
+            if [[ -n "$old_db_backup" && -f "$old_db_backup" ]]; then
+
+                echo
+                echo ">>> Откат предыдущей БД..."
+
+                systemctl stop x-ui 2>/dev/null || true
+
+                cp -a "$old_db_backup" "$XUI_DB"
+
+                chown root:root "$XUI_DB"
+                chmod 600 "$XUI_DB"
+
+                systemctl start x-ui 2>/dev/null || true
+
+                echo "✓ Предыдущая БД восстановлена."
+            fi
+
+            cleanup_restore_tmp
+            return 0
+        fi
+
+        echo "✓ x-ui запущен."
+
+        # ============================================================
+        # САМАЯ ВАЖНАЯ ПРОВЕРКА
+        #
+        # Проверяем БД ПОСЛЕ запуска панели.
+        # ============================================================
+
+        echo
+        echo ">>> Финальная проверка БД после запуска x-ui..."
+
+        sleep 3
+
+        if [[ ! -f "$XUI_DB" ]]; then
+
+            echo "❌ /etc/x-ui/x-ui.db отсутствует после запуска x-ui."
+
+            if [[ -n "$old_db_backup" && -f "$old_db_backup" ]]; then
+                systemctl stop x-ui 2>/dev/null || true
+                cp -a "$old_db_backup" "$XUI_DB"
+                chown root:root "$XUI_DB"
+                chmod 600 "$XUI_DB"
+                systemctl start x-ui 2>/dev/null || true
+            fi
+
+            cleanup_restore_tmp
+            return 0
+        fi
+
+        if ! sqlite3 "$XUI_DB" \
+            'PRAGMA integrity_check;' 2>/dev/null | grep -qx 'ok'; then
+
+            echo "❌ SQLite integrity_check после запуска не пройден."
+
+            echo
+            echo ">>> Лог x-ui:"
+            journalctl -u x-ui -n 50 --no-pager || true
+
+            cleanup_restore_tmp
+            return 0
+        fi
+
+        installed_inbounds="$(
+            sqlite3 "$XUI_DB" \
+                "SELECT COUNT(*) FROM inbounds;" \
+                2>/dev/null || echo 0
+        )"
+
+        installed_users="$(
+            sqlite3 "$XUI_DB" \
+                "SELECT COUNT(*) FROM users;" \
+                2>/dev/null || echo 0
+        )"
+
+        installed_settings="$(
+            sqlite3 "$XUI_DB" \
+                "SELECT COUNT(*) FROM settings;" \
+                2>/dev/null || echo 0
+        )"
+
+        echo
+        echo "    Inbounds       : $installed_inbounds"
+        echo "    Users          : $installed_users"
+        echo "    Settings       : $installed_settings"
+
+        # ============================================================
+        # КРИТИЧЕСКАЯ ПРОВЕРКА
+        # ============================================================
+
+        if (( installed_inbounds < 1 )); then
+
+            echo
+            echo "❌ КРИТИЧЕСКАЯ ОШИБКА:"
+            echo "   После запуска x-ui база НЕ содержит inbounds."
+            echo
+            echo "   До установки было: ${backup_inbounds}"
+            echo "   После запуска стало: ${installed_inbounds}"
+            echo
+
+            echo ">>> Статус x-ui:"
+            systemctl status x-ui --no-pager -l | tail -40 || true
+
+            echo
+            echo ">>> Последние сообщения x-ui:"
+            journalctl -u x-ui -n 80 --no-pager || true
+
+            # --------------------------------------------------------
+            # Rollback
+            # --------------------------------------------------------
+
+            if [[ -n "$old_db_backup" && -f "$old_db_backup" ]]; then
+
+                echo
+                echo ">>> Откат предыдущей рабочей БД..."
+
+                systemctl stop x-ui 2>/dev/null || true
+
+                cp -a "$old_db_backup" "$XUI_DB"
+
+                chown root:root "$XUI_DB"
+                chmod 600 "$XUI_DB"
+
+                systemctl start x-ui 2>/dev/null || true
+
+                echo "✓ Предыдущая БД восстановлена."
+            fi
+
+            cleanup_restore_tmp
+            return 0
+        fi
+
+        if (( installed_users < 1 )); then
+
+            echo
+            echo "❌ КРИТИЧЕСКАЯ ОШИБКА:"
+            echo "   После запуска x-ui база НЕ содержит users."
+
+            if [[ -n "$old_db_backup" && -f "$old_db_backup" ]]; then
+
+                systemctl stop x-ui 2>/dev/null || true
+
+                cp -a "$old_db_backup" "$XUI_DB"
+
+                chown root:root "$XUI_DB"
+                chmod 600 "$XUI_DB"
+
+                systemctl start x-ui 2>/dev/null || true
+
+                echo "✓ Предыдущая БД восстановлена."
+            fi
+
+            cleanup_restore_tmp
+            return 0
+        fi
+
+        # ============================================================
+        # УСПЕХ
+        # ============================================================
+
+        echo
+        echo "✓ База ${db_file} успешно проверена и установлена."
+        echo "✓ AES-256-CBC + PBKDF2 → tar.gz → SQLite integrity_check: OK."
+        echo "✓ Счетчики трафика обнулены."
+        echo "✓ x-ui: RUNNING"
+        echo "✓ Inbounds: ${installed_inbounds}"
+        echo "✓ Users: ${installed_users}"
+        echo "✓ Settings: ${installed_settings}"
+
+        cleanup_restore_tmp
+        return 0
+
     done
 
+    # ================================================================
+    # Все 3 попытки неудачны
+    # ================================================================
+
+    echo
     echo "❌ Восстановление базы не выполнено после 3 попыток."
-    echo "   Рабочая база x-ui НЕ изменена. Установка продолжается с чистой базой."
+    echo "   Рабочая база x-ui НЕ изменена."
+    echo "   Установка продолжается с чистой базой."
+
     cleanup_restore_tmp
     return 0
 }
-
-# 9. СКРИПТЫ ОБСЛУЖИВАНИЯ (BACKUP, HEALTH, UPDATE)
-mkdir -p /usr/local/x-ui/bin "$BACKUP_DIR" "$PRE_UPDATE_DIR"
-chmod 700 "$BACKUP_DIR" "$PRE_UPDATE_DIR"
-
 
 ###############################################################################
 # 9.1. BACKUP СКРИПТ С ПРОВЕРКОЙ TAR -TZF
