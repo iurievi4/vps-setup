@@ -162,7 +162,7 @@ show_dashboard() {
 
     echo
     echo -e "${C_BCYAN}╔════════════════════════════════════════════════════════════════════════╗${C_RESET}"
-    echo -e "${C_BCYAN}║${C_RESET}                  ${C_BOLD}${C_GREEN}⚡ VPS SETUP INSTALLER & MANAGER ⚡${C_RESET}                   ${C_BCYAN}║${C_RESET}"
+    echo -e "${C_BCYAN}║${C_RESET}                 ${C_BOLD}${C_GREEN}⚡ VPS SETUP INSTALLER & MANAGER ⚡${C_RESET}                  ${C_BCYAN}║${C_RESET}"
     echo -e "${C_BCYAN}║${C_RESET}          ${C_GRAY}Автоматический комплекс настройки, защиты и сервисов${C_RESET}          ${C_BCYAN}║${C_RESET}"
     echo -e "${C_BCYAN}╚════════════════════════════════════════════════════════════════════════╝${C_RESET}"
     echo
