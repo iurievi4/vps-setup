@@ -1833,6 +1833,17 @@ if [[ -z "$ANTISCAN_COUNT" || "$ANTISCAN_COUNT" -eq 0 ]] && [[ -f /etc/antiscan/
 fi
 ANTISCAN_COUNT="${ANTISCAN_COUNT:-0}"
 
+# UFW
+if command -v ufw >/dev/null 2>&1; then
+    if ufw status 2>/dev/null | grep -q "^Status: active"; then
+        STATUS_UFW="${GREEN_B}RUNNING${NONE}"
+    else
+        STATUS_UFW="${RED_B}INACTIVE${NONE}"
+    fi
+else
+    STATUS_UFW="${GRAY}NOT INSTALLED${NONE}"
+fi
+
 ANTISCAN_LAST="N/A"
 if [[ -f /etc/antiscan/last_update ]]; then
     ANTISCAN_LAST="$(cat /etc/antiscan/last_update 2>/dev/null)"
@@ -1958,6 +1969,7 @@ if [[ "$ANTISCAN_STATUS" != *"NOT INSTALLED"* ]]; then
 fi
 
 printf "    %-22s : %b\n" "Fail2ban" "$STATUS_FAIL2BAN"
+printf "    %-22s : %b\n" "UFW" "$STATUS_UFW"
 printf "      %-20s : %b\n" "SSH jail" "$STATUS_SSH_JAIL"
 printf "      %-20s : %b\n" "recidive" "$STATUS_RECIDIVE"
 printf "    %-22s : %b\n" "3x-ui / Xray" "$STATUS_XUI"
