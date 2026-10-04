@@ -403,19 +403,19 @@ generate_new_keypair() {
 
 menu_install_key() {
     clear 2>/dev/null || true
-    echo "╔══════════════════════════════════════════════╗"
-    echo "║          ВЫБОР ИСТОЧНИКА SSH-КЛЮЧА           ║"
-    echo "╚══════════════════════════════════════════════╝"
-    echo "  1) 🔒 Скачать из приватного репозитория GitHub (iurievi4/my-private-backups)"
-    echo "  2) 📋 Вставить публичный ключ вручную (консоль)"
-    echo "  3) 📁 Прочитать из локального файла на сервере"
-    echo "  4) 🆕 Сгенерировать новую пару и установить ключ"
-    echo
-    echo "  0) ↩️  Назад в главное меню"
-    echo "══════════════════════════════════════════════"
+    echo -e "${C_CYAN}╭──────────────────────────────────────────────╮${C_RESET}"
+    echo -e "${C_CYAN}│${C_RESET} ${C_BOLD}${C_GREEN}          ВЫБОР ИСТОЧНИКА SSH-КЛЮЧА           ${C_RESET}${C_CYAN}│${C_RESET}"
+    echo -e "${C_CYAN}╰──────────────────────────────────────────────╯${C_RESET}"
+    echo -e " ${C_BLUE}▪${C_RESET} ${C_BOLD}1)${C_RESET} 🔒 Скачать из приватного репозитория GitHub"
+    echo -e " ${C_BLUE}▪${C_RESET} ${C_BOLD}2)${C_RESET} 📋 Вставить публичный ключ вручную (консоль)"
+    echo -e " ${C_BLUE}▪${C_RESET} ${C_BOLD}3)${C_RESET} 📁 Прочитать из локального файла на сервере"
+    echo -e " ${C_BLUE}▪${C_RESET} ${C_BOLD}4)${C_RESET} 🆕 Сгенерировать новую пару и установить ключ"
+    echo -e " ${C_CYAN}────────────────────────────────────────────────${C_RESET}"
+    echo -e " ${C_BOLD}0)${C_RESET} ↩️  Назад в главное меню"
+    echo -e "${C_CYAN}────────────────────────────────────────────────${C_RESET}"
 
     local choice=""
-    read -rp "Выберите вариант [0-4]: " choice </dev/tty || choice="0"
+    read -rp " ➔ Выберите вариант [0-4]: " choice </dev/tty || choice="0"
 
     case "$choice" in
         1)
@@ -423,7 +423,7 @@ menu_install_key() {
             ;;
         2)
             echo
-            echo "Вставьте одну строку публичного ключа (например, ssh-ed25519 AAAAC3...):"
+            echo -e "${C_YELLOW}Вставьте одну строку публичного ключа (например, ssh-ed25519 AAAAC3...):${C_RESET}"
             local user_key=""
             read -r user_key </dev/tty || user_key=""
             if [[ -z "$user_key" ]]; then
@@ -1057,6 +1057,7 @@ main() {
     esac
 
     # Иначе — режим меню на сервере
+   # Иначе — режим меню на сервере
     while true; do
         clear 2>/dev/null || true
         local current_port
@@ -1066,31 +1067,31 @@ main() {
             keys_count="$(grep -cvE '^\s*(#|$)' "$AUTH_KEYS" 2>/dev/null || echo 0)"
         fi
 
-        echo "╔══════════════════════════════════════════════╗"
-        echo "║         🔐 SSH KEY & SECURITY MANAGER        ║"
-        echo "╚══════════════════════════════════════════════╝"
-        echo "  SSH-порт: ${current_port}  |  Активных ключей: ${keys_count}"
+        echo -e "${C_CYAN}╭──────────────────────────────────────────────╮${C_RESET}"
+        echo -e "${C_CYAN}│${C_RESET} ${C_BOLD}${C_GREEN}         🔐 SSH KEY & SECURITY MANAGER        ${C_RESET}${C_CYAN}│${C_RESET}"
+        echo -e "${C_CYAN}╰──────────────────────────────────────────────╯${C_RESET}"
+        echo -e " ${C_CYAN}📡 Порт:${C_RESET} ${C_BOLD}${current_port}${C_RESET}  │  ${C_CYAN}🔑 Активных ключей:${C_RESET} ${C_BOLD}${keys_count}${C_RESET}"
+        echo -e "${C_CYAN}────────────────────────────────────────────────${C_RESET}"
+        echo -e " ${C_YELLOW}УПРАВЛЕНИЕ КЛЮЧАМИ:${C_RESET}"
+        echo -e "   ${C_BOLD}1)${C_RESET} 🔑 Установить SSH-ключ (GitHub / ввод / файл / ген.)"
+        echo -e "   ${C_BOLD}2)${C_RESET} 📋 Показать установленные ключи"
+        echo -e "   ${C_BOLD}3)${C_RESET} ❌ Удалить SSH-ключ"
         echo
-        echo "  УПРАВЛЕНИЕ КЛЮЧАМИ:"
-        echo "    1) 🔑 Установить SSH-ключ (GitHub / ввод / файл / генерация)"
-        echo "    2) 📋 Показать установленные ключи"
-        echo "    3) ❌ Удалить SSH-ключ"
+        echo -e " ${C_YELLOW}ПАРОЛЬНАЯ БЕЗОПАСНОСТЬ:${C_RESET}"
+        echo -e "   ${C_BOLD}4)${C_RESET} 🔒 Отключить вход по паролю (защита от брутфорса)"
+        echo -e "   ${C_BOLD}5)${C_RESET} 🔓 Включить вход по паролю"
         echo
-        echo "  ПАРОЛЬНАЯ БЕЗОПАСНОСТЬ:"
-        echo "    4) 🔒 Отключить вход по паролю (защита от брутфорса)"
-        echo "    5) 🔓 Включить вход по паролю"
-        echo
-        echo "  СИСТЕМА И БЭКАПЫ:"
-        echo "    6) 💾 Создать backup authorized_keys & sshd"
-        echo "    7) ↩️  Восстановить authorized_keys из бэкапа"
-        echo "    8) 🔍 Проверить SSH-конфигурацию (sshd -t)"
-        echo "    9) 🌐 Показать текущий SSH-порт и статус службы"
-        echo
-        echo "    0) 🚪 Выход"
-        echo "══════════════════════════════════════════════"
+        echo -e " ${C_YELLOW}СИСТЕМА И БЭКАПЫ:${C_RESET}"
+        echo -e "   ${C_BOLD}6)${C_RESET} 💾 Создать backup authorized_keys & sshd"
+        echo -e "   ${C_BOLD}7)${C_RESET} ↩️  Восстановить authorized_keys из бэкапа"
+        echo -e "   ${C_BOLD}8)${C_RESET} 🔍 Проверить SSH-конфигурацию (sshd -t)"
+        echo -e "   ${C_BOLD}9)${C_RESET} 🌐 Показать текущий SSH-порт и статус службы"
+        echo -e "${C_CYAN}────────────────────────────────────────────────${C_RESET}"
+        echo -e "   ${C_BOLD}0)${C_RESET} 🚪 Выход"
+        echo -e "${C_CYAN}────────────────────────────────────────────────${C_RESET}"
 
         local choice=""
-        read -rp "Выберите действие [0-9]: " choice </dev/tty || choice="0"
+        read -rp " ➔ Выберите действие [0-9]: " choice </dev/tty || choice="0"
 
         case "$choice" in
             1) menu_install_key ;;
