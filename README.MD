@@ -1,8 +1,11 @@
-# VPS Setup & Manager (vps-manager.sh) 🚀
-
-> **OS:** Ubuntu & Debian &nbsp;|&nbsp; **Shell:** Bash &nbsp;|&nbsp; **Security:** UFW + Fail2ban + VPS IP Guard &nbsp;|&nbsp; **Proxy:** NaïveProxy + Caddy &nbsp;|&nbsp; **Web:** Nginx Camouflage &nbsp;|&nbsp; **License:** MIT
-
-Единый модульный инструментарий для комплексного администрирования Linux VPS: первичная инициализация системы, усиление безопасности (hardening), развертывание высокоскоростного прокси NaïveProxy, фильтрация сетевых сканеров и ботов через **VPS IP Guard**, подключение маскировочных сайтов Nginx и автоматизированное резервное копирование.
+VPS Setup & Manager (`vps-manager.sh`) 🚀
+![OS: Ubuntu & Debian](https://img.shields.io/badge/OS-Ubuntu%20%7C%20Debian-E95420?logo=linux&logoColor=white)
+![Shell: Bash](https://img.shields.io/badge/Shell-Bash-4EAA25?logo=gnu-bash&logoColor=white)
+![Security: UFW + Fail2ban](https://img.shields.io/badge/Security-UFW%20%2B%20Fail2ban-blue)
+![Proxy: NaïveProxy + Caddy](https://img.shields.io/badge/Proxy-NaïveProxy%20%2B%20Caddy-00ADD8?logo=caddy&logoColor=white)
+![Web: Nginx Camouflage](https://img.shields.io/badge/Web-Nginx%20Decoy%20Templates-009639?logo=nginx&logoColor=white)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+Единый модульный инструментарий для комплексного администрирования Linux VPS: первичная инициализация системы, усиление безопасности (hardening), развертывание высокоскоростного прокси NaïveProxy, подключение маскировочных сайтов Nginx и резервное копирование.
 
 Центральной точкой входа и главным оркестратором проекта является интерактивное меню `vps-manager.sh` (также доступно через `vps.sh` и `install.sh`).
 
