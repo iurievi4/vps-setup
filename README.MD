@@ -157,17 +157,7 @@ vps-manager.sh / vps.sh (ГЛАВНЫЙ ОРКЕСТРАТОР / ЕДИНАЯ Т
 
 ## 🚀 Быстрый старт
 
-### Способ 1. Запуск через Центр безопасности (Рекомендуется)
-
-Запуск менеджера безопасности и фильтрации трафика:
-
-```bash
-curl -sSL "https://raw.githubusercontent.com/iurievi4/vps-setup/main/security-install%2B.sh" -o security-install+.sh
-chmod +x security-install+.sh
-sudo ./security-install+.sh
-```
-
-### Способ 2. Запуск Главного Диспетчера VPS
+Запуск Главного Диспетчера VPS
 
 Запуск интерактивного центра управления:
 
@@ -176,22 +166,6 @@ curl -fsSL "https://raw.githubusercontent.com/iurievi4/vps-setup/main/vps-manage
 chmod +x /root/vps-manager.sh
 sudo /root/vps-manager.sh
 ```
-
-### Способ 3. Клонирование репозитория
-
-```bash
-# Обновление пакетов и установка базовых утилит
-apt update && apt install -y git curl ipset iptables
-
-# Клонирование репозитория
-git clone https://github.com/iurievi4/vps-setup.git /root/vps-setup
-cd /root/vps-setup
-
-# Выдача прав на исполнение всем скриптам
-chmod +x *.sh modules/*.sh
-```
-
----
 
 ## 💻 Системные требования
 
