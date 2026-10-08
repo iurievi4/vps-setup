@@ -53,7 +53,7 @@ vps-manager.sh / vps.sh (ГЛАВНЫЙ ОРКЕСТРАТОР / ЕДИНАЯ Т
        │     ├── [1] Полная автоустановка ──> setup.sh (тихий режим, сохранение БД)
        │     └── [2] Ручная настройка     ──> setup.sh (интерактивный режим)
        │           ├── SWAP (2 GB), оптимизация ядра и TCP BBR
-       │           ├── Настройка SSH-порта 1241, UFW и Fail2ban
+       │           ├── Настройка SSH-порта ****, UFW и Fail2ban
        │           ├── Развертывание VPS IP Guard
        │           ├── Cloudflare WARP (SOCKS5 127.0.0.1:40000)
        │           ├── Веб-сервер Nginx (:80) + панель 3x-ui / Xray
@@ -62,7 +62,7 @@ vps-manager.sh / vps.sh (ГЛАВНЫЙ ОРКЕСТРАТОР / ЕДИНАЯ Т
        │
        ├── 2. БЕЗОПАСНОСТЬ И КОНТРОЛЬ ДОСТУПА
        │     ├── [3] Безопасность VPS ──> vps-security-installer.sh (Fail2ban + IP Guard + WARP)
-       │     └── [4] SSH-ключи        ──> ssh-key-manager.sh (Ed25519, защита от lockout)
+       │     └── [4] SSH-ключи        ──> ssh-key-manager.sh ( защита от lockout)
        │
        ├── 3. СЕРВИСЫ И СЕТЬ
        │     ├── [5] Шаблоны Nginx        ──> nginx-templates.sh (маскировка, reverse proxy)
@@ -129,10 +129,10 @@ vps-manager.sh / vps.sh (ГЛАВНЫЙ ОРКЕСТРАТОР / ЕДИНАЯ Т
 │                                                                        │
 │   Политика по умолчанию: DEFAULT DROP INCOMING                         │
 │   Разрешены только строго необходимые порты:                           │
-│     ├── SSH (порт 1241/tcp)                                            │
+│     ├── SSH (порт ****/tcp)                                            │
 │     ├── HTTP / ACME Challenge (80/tcp)                                 │
-│     ├── HTTPS / NaïveProxy / Xray (443, 2053, 8443/tcp)                │
-│     └── Панель 3x-ui (кастомный порт 8784/tcp)                         │
+│     ├── HTTPS / NaïveProxy / Xray (443, ????, ????/tcp)                │
+│     └── Панель 3x-ui (кастомный порт ????/tcp)                         │
 └───────────────────────────────────┬────────────────────────────────────┘
                                     │
                                     ▼
@@ -175,7 +175,7 @@ sudo /root/vps-manager.sh
 | **Архитектура** | amd64 (x86_64), arm64 (aarch64) |
 | **Права доступа** | root или пользователь с привилегиями sudo |
 | **Аппаратные ресурсы** | От 512 МБ RAM (рекомендуется 1 ГБ+ при установке Docker), 5+ ГБ диска |
-| **Сетевые порты** | 1241/tcp (SSH), 80/tcp (HTTP), 443/tcp (HTTPS/NaïveProxy/Xray) |
+| **Сетевые порты** | ????/tcp (SSH), 80/tcp (HTTP), 443/tcp (HTTPS/NaïveProxy/Xray) |
 | **Сетевые утилиты** | `ipset`, `iptables`, `curl`, `awk`, `grep`, `systemd` |
 
 ---
@@ -188,7 +188,7 @@ sudo /root/vps-manager.sh
 * **Обновление пакетов:** актуализация системы через `apt update && apt upgrade` с подавлением интерактивных зависаний (`needrestart`).
 * **Файл подкачки (Swap):** генерация swap 2 GB с параметром ядра `vm.swappiness=10`, предотвращающим падения служб по OOM (*Out Of Memory*).
 * **Сетевой тюнинг (TCP BBR):** автоматическая проверка поддержки BBR ядром Linux, включение очереди `fq` и алгоритма `bbr` для минимизации задержек и потерь пакетов.
-* **Кастомный порт SSH (1241):** безопасная смена порта SSH с предварительным открытием правил в UFW и защитой от потери доступа (*lockout protection*).
+* **Кастомный порт SSH (????):** безопасная смена порта SSH с предварительным открытием правил в UFW и защитой от потери доступа (*lockout protection*).
 * **Cloudflare WARP:** развертывание официального клиента `cloudflare-warp` в изолированном режиме локального SOCKS5-прокси (`127.0.0.1:40000`).
 
 ---
@@ -291,12 +291,12 @@ ip-guard list           # Просмотр ручного чёрного спи�
   └─ Disk     : 4.8G / 9.4G   [■■■■■□□□□□] 54%
 
 🛡️  SECURITY & SERVICES
-  ├─ SSH          : ● RUNNING  :1241
+  ├─ SSH          : ● RUNNING  :????
   ├─ UFW          : ● ACTIVE
   ├─ Fail2ban     : ● ACTIVE
   ├─ IP Guard     : ● ACTIVE
   ├─ Nginx        : ● RUNNING  :80
-  ├─ 3x-ui        : ● RUNNING  :8784
+  ├─ 3x-ui        : ● RUNNING  :????
   └─ WARP         : ● RUNNING  :40000
 ```
 
@@ -399,7 +399,7 @@ systemctl status nginx --no-pager
 tail -n 50 /var/log/nginx/error.log
 
 # Проверка открытых портов (LISTEN)
-ss -tulpn | grep -E ':(80|443|1241|40000)'
+ss -tulpn | grep -E ':(80|443|????|40000)'
 ```
 
 ---
