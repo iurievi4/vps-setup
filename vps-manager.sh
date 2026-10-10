@@ -181,7 +181,7 @@ show_management_dashboard() {
     echo -e "${C_BCYAN}══════════════════════════════════════════════════════════════════════${C_RESET}"
     echo -e "                          ${C_BOLD}${C_GREEN}⚡ VPS MANAGEMENT ⚡${C_RESET}"
     echo -e "                  ${C_GRAY}Управление и обслуживание VPS${C_RESET}"
-    echo -e "                         ${C_BOLD}${C_CYAN}created by IURIEVI4${C_RESET}"
+    echo -e "           ${C_BOLD}${C_CYAN}Created by iurievi4 using Gemini Spark and GPT.${C_RESET}"
     echo -e "${C_BCYAN}══════════════════════════════════════════════════════════════════════${C_RESET}"
     echo
     echo -e "${C_BOLD}${C_YELLOW}📊 VPS STATUS${C_RESET}"
